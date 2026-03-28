@@ -5,7 +5,7 @@ if not _G.GUIFrameworkLoaded then
 
     local HttpService = game:GetService("HttpService")
     
-    local GITHUB_TOKEN = "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"
+    local GITHUB_TOKEN = "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"
     local OWNER     = "jimbohimbo233-crypto"
     local REPO      = "rivals"
     local FILE_PATH = "rankedCheaterListv2"
@@ -1171,4 +1171,6 @@ if not _G.GUIFrameworkLoaded then
 
     _G.Notify     = Notify
     _G.PlayerTags = playerTagStates
+
+    print("[GUI Framework] Loaded — ';' toggles the player HUD | notifications always on")
 end
