@@ -1,0 +1,6 @@
+local cheaters = [[
+[10634021379, "Full Rage"],
+[10669801845, "Full Rage"]
+]]
+
+return cheaters
