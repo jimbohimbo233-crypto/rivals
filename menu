@@ -1,0 +1,1036 @@
+--[[
+    GUI Framework
+    - Notifications: Normal / Warning / Info modes, duration, confirm support
+      → Always visible, cannot be toggled off
+    - Player HUD: in-game users with thumbnails, tag toggles, send report
+      → Toggle with ";" key only
+    - All GUI parented to game.CoreGui
+
+    Scroll fixes:
+    - Player card grows/shrinks when dropdown opens so UIListLayout
+      measures full height → outer ScrollingFrame canvas stays correct
+    - Dropdown uses a ScrollingFrame so it is scrollable on its own
+      even if somehow the content overflows
+--]]
+
+if not _G.GUIFrameworkLoaded then
+    _G.GUIFrameworkLoaded = true
+
+    -- ─────────────────────────────────────────────
+    --  Services
+    -- ─────────────────────────────────────────────
+    local Players          = game:GetService("Players")
+    local CoreGui          = game:GetService("CoreGui")
+    local UserInputService = game:GetService("UserInputService")
+    local TweenService     = game:GetService("TweenService")
+    local LocalPlayer      = Players.LocalPlayer
+
+    -- ─────────────────────────────────────────────
+    --  Theme
+    -- ─────────────────────────────────────────────
+    local Theme = {
+        BgDark      = Color3.fromRGB(10,  10,  10),
+        BgCard      = Color3.fromRGB(20,  20,  20),
+        BgDeep      = Color3.fromRGB(15,  15,  15),
+
+        AccentBlue  = Color3.fromRGB(74,  124, 155),
+        AccentLight = Color3.fromRGB(93,  154, 196),
+        AccentDark  = Color3.fromRGB(58,  98,  120),
+
+        WarnYellow  = Color3.fromRGB(220, 170, 50),
+        WarnDark    = Color3.fromRGB(160, 120, 30),
+
+        InfoTeal    = Color3.fromRGB(60,  180, 160),
+        InfoDark    = Color3.fromRGB(40,  130, 115),
+
+        ReportRed   = Color3.fromRGB(200, 60,  60),
+
+        ToggleOn    = Color3.fromRGB(76,  175, 80),
+
+        TextWhite   = Color3.fromRGB(255, 255, 255),
+        TextGray    = Color3.fromRGB(160, 160, 160),
+        TextDim     = Color3.fromRGB(100, 100, 100),
+    }
+
+    -- ─────────────────────────────────────────────
+    --  Helpers
+    -- ─────────────────────────────────────────────
+    local function corner(parent, radius)
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, radius or 12)
+        c.Parent = parent
+        return c
+    end
+
+    local function makeStroke(parent, color, thickness, transparency)
+        local s = Instance.new("UIStroke")
+        s.Color        = color or Theme.AccentBlue
+        s.Thickness    = thickness or 1
+        s.Transparency = transparency or 0.78
+        s.Parent       = parent
+        return s
+    end
+
+    local function tw(obj, info, props)
+        TweenService:Create(obj, info, props):Play()
+    end
+
+    -- ─────────────────────────────────────────────
+    --  Root ScreenGuis
+    -- ─────────────────────────────────────────────
+    local function makeGui(name, order)
+        local g = Instance.new("ScreenGui")
+        g.Name           = name
+        g.ResetOnSpawn   = false
+        g.DisplayOrder   = order
+        g.IgnoreGuiInset = true
+        g.Parent         = CoreGui
+        return g
+    end
+
+    local NotifGui  = makeGui("FW_Notifications", 999999)  -- always on
+    local PlayerGui = makeGui("FW_PlayerHUD",     999998)  -- ";" toggles this
+
+    local hudVisible = true
+    UserInputService.InputBegan:Connect(function(input, processed)
+        if not processed and input.KeyCode == Enum.KeyCode.Semicolon then
+            hudVisible = not hudVisible
+            PlayerGui.Enabled = hudVisible
+        end
+    end)
+
+    -- ══════════════════════════════════════════════
+    --  NOTIFICATION SYSTEM
+    -- ══════════════════════════════════════════════
+
+    local NOTIF_W   = 280
+    local NOTIF_GAP = 8
+    local NOTIF_X   = 16
+    local NOTIF_Y   = 16
+
+    local notifStack = {}
+
+    local function rebuildStack()
+        local y = NOTIF_Y
+        for _, entry in ipairs(notifStack) do
+            entry.targetY = y
+            tw(entry.frame,
+                TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                { Position = UDim2.new(0, NOTIF_X, 0, y) })
+            y = y + entry.frame.AbsoluteSize.Y + NOTIF_GAP
+        end
+    end
+
+    local function removeNotif(frame)
+        for i, entry in ipairs(notifStack) do
+            if entry.frame == frame then
+                table.remove(notifStack, i)
+                break
+            end
+        end
+        tw(frame,
+            TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            { Position = UDim2.new(0, -NOTIF_W - 20, 0, frame.Position.Y.Offset) })
+        task.delay(0.21, function()
+            frame:Destroy()
+            rebuildStack()
+        end)
+    end
+
+    --[[
+        Notify:Send(options)
+        options = {
+            Type        = "normal" | "warning" | "info"
+            Title       = string
+            Description = string
+            Duration    = number   (seconds, default 4)
+            Confirm     = bool
+            OnConfirm   = function(bool)
+        }
+    --]]
+    local Notify = {}
+
+    function Notify:Send(opts)
+        opts = opts or {}
+        local notifType = string.lower(opts.Type or "normal")
+        local title     = opts.Title       or "Notification"
+        local desc      = opts.Description or ""
+        local duration  = opts.Duration    or 4
+        local confirm   = opts.Confirm     or false
+        local callback  = opts.OnConfirm
+
+        local accent, accentDark
+        if notifType == "warning" then
+            accent = Theme.WarnYellow ; accentDark = Theme.WarnDark
+        elseif notifType == "info" then
+            accent = Theme.InfoTeal   ; accentDark = Theme.InfoDark
+        else
+            accent = Theme.AccentLight; accentDark = Theme.AccentDark
+        end
+
+        local cardH = confirm and 120 or 84
+
+        local Card = Instance.new("Frame")
+        Card.Size                   = UDim2.new(0, NOTIF_W, 0, cardH)
+        Card.Position               = UDim2.new(0, -NOTIF_W - 20, 0, NOTIF_Y)
+        Card.BackgroundColor3       = Theme.BgCard
+        Card.BackgroundTransparency = 0.05
+        Card.BorderSizePixel        = 0
+        Card.Parent                 = NotifGui
+        corner(Card, 16)
+        makeStroke(Card, accent, 1, 0.72)
+
+        local Bar = Instance.new("Frame")
+        Bar.Size             = UDim2.new(0, 3, 1, -20)
+        Bar.Position         = UDim2.new(0, 0, 0, 10)
+        Bar.BackgroundColor3 = accent
+        Bar.BorderSizePixel  = 0
+        Bar.Parent           = Card
+        corner(Bar, 2)
+
+        local Dot = Instance.new("Frame")
+        Dot.Size             = UDim2.new(0, 7, 0, 7)
+        Dot.Position         = UDim2.new(0, 14, 0, 14)
+        Dot.BackgroundColor3 = accent
+        Dot.BorderSizePixel  = 0
+        Dot.Parent           = Card
+        corner(Dot, 4)
+
+        local TitleLabel = Instance.new("TextLabel")
+        TitleLabel.Size                   = UDim2.new(1, -50, 0, 18)
+        TitleLabel.Position               = UDim2.new(0, 28, 0, 8)
+        TitleLabel.BackgroundTransparency = 1
+        TitleLabel.Font                   = Enum.Font.GothamBold
+        TitleLabel.TextSize               = 13
+        TitleLabel.TextColor3             = Theme.TextWhite
+        TitleLabel.TextXAlignment         = Enum.TextXAlignment.Left
+        TitleLabel.Text                   = title
+        TitleLabel.Parent                 = Card
+
+        local TypeLabel = Instance.new("TextLabel")
+        TypeLabel.Size                   = UDim2.new(0, 60, 0, 18)
+        TypeLabel.Position               = UDim2.new(1, -66, 0, 8)
+        TypeLabel.BackgroundTransparency = 1
+        TypeLabel.Font                   = Enum.Font.GothamBold
+        TypeLabel.TextSize               = 10
+        TypeLabel.TextColor3             = accent
+        TypeLabel.TextXAlignment         = Enum.TextXAlignment.Right
+        TypeLabel.Text                   = string.upper(notifType)
+        TypeLabel.Parent                 = Card
+
+        local Div = Instance.new("Frame")
+        Div.Size                   = UDim2.new(1, -32, 0, 1)
+        Div.Position               = UDim2.new(0, 16, 0, 28)
+        Div.BackgroundColor3       = accent
+        Div.BackgroundTransparency = 0.78
+        Div.BorderSizePixel        = 0
+        Div.Parent                 = Card
+
+        local DescLabel = Instance.new("TextLabel")
+        DescLabel.Size                   = UDim2.new(1, -36, 0, 36)
+        DescLabel.Position               = UDim2.new(0, 16, 0, 34)
+        DescLabel.BackgroundTransparency = 1
+        DescLabel.Font                   = Enum.Font.Gotham
+        DescLabel.TextSize               = 11
+        DescLabel.TextColor3             = Theme.TextGray
+        DescLabel.TextXAlignment         = Enum.TextXAlignment.Left
+        DescLabel.TextYAlignment         = Enum.TextYAlignment.Top
+        DescLabel.TextWrapped            = true
+        DescLabel.Text                   = desc
+        DescLabel.Parent                 = Card
+
+        local ProgBg = Instance.new("Frame")
+        ProgBg.Size                   = UDim2.new(1, -32, 0, 2)
+        ProgBg.Position               = UDim2.new(0, 16, 1, -10)
+        ProgBg.BackgroundColor3       = accentDark
+        ProgBg.BackgroundTransparency = 0.5
+        ProgBg.BorderSizePixel        = 0
+        ProgBg.Parent                 = Card
+        corner(ProgBg, 2)
+
+        local ProgFill = Instance.new("Frame")
+        ProgFill.Size             = UDim2.new(1, 0, 1, 0)
+        ProgFill.BackgroundColor3 = accent
+        ProgFill.BackgroundTransparency = 0.2
+        ProgFill.BorderSizePixel  = 0
+        ProgFill.Parent           = ProgBg
+        corner(ProgFill, 2)
+
+        local dismissed = false
+
+        if confirm then
+            local YesBtn = Instance.new("TextButton")
+            YesBtn.Size             = UDim2.new(0, 80, 0, 22)
+            YesBtn.Position         = UDim2.new(0, 16, 1, -34)
+            YesBtn.BackgroundColor3 = accent
+            YesBtn.BackgroundTransparency = 0.2
+            YesBtn.BorderSizePixel  = 0
+            YesBtn.Font             = Enum.Font.GothamBold
+            YesBtn.TextSize         = 11
+            YesBtn.TextColor3       = Theme.TextWhite
+            YesBtn.Text             = "Confirm"
+            YesBtn.Parent           = Card
+            corner(YesBtn, 8)
+
+            local NoBtn = Instance.new("TextButton")
+            NoBtn.Size             = UDim2.new(0, 60, 0, 22)
+            NoBtn.Position         = UDim2.new(0, 104, 1, -34)
+            NoBtn.BackgroundColor3 = Theme.BgDeep
+            NoBtn.BackgroundTransparency = 0.1
+            NoBtn.BorderSizePixel  = 0
+            NoBtn.Font             = Enum.Font.GothamBold
+            NoBtn.TextSize         = 11
+            NoBtn.TextColor3       = Theme.TextGray
+            NoBtn.Text             = "Dismiss"
+            NoBtn.Parent           = Card
+            corner(NoBtn, 8)
+            makeStroke(NoBtn, Theme.TextDim, 1, 0.6)
+
+            YesBtn.MouseButton1Click:Connect(function()
+                if dismissed then return end
+                dismissed = true
+                if callback then pcall(callback, true) end
+                removeNotif(Card)
+            end)
+            NoBtn.MouseButton1Click:Connect(function()
+                if dismissed then return end
+                dismissed = true
+                if callback then pcall(callback, false) end
+                removeNotif(Card)
+            end)
+        end
+
+        local entry = { frame = Card, targetY = NOTIF_Y }
+        table.insert(notifStack, entry)
+        rebuildStack()
+
+        tw(Card,
+            TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+            { Position = UDim2.new(0, NOTIF_X, 0, entry.targetY) })
+
+        tw(ProgFill, TweenInfo.new(duration, Enum.EasingStyle.Linear),
+            { Size = UDim2.new(0, 0, 1, 0) })
+
+        task.delay(duration, function()
+            if not dismissed and Card.Parent then
+                dismissed = true
+                removeNotif(Card)
+            end
+        end)
+
+        return Card
+    end
+
+    -- ══════════════════════════════════════════════
+    --  PLAYER HUD
+    -- ══════════════════════════════════════════════
+
+    local CARD_BASE_H = 64   -- collapsed card height
+    local HUD_W       = 310
+    local HUD_H       = 300
+
+    local HUDFrame = Instance.new("Frame")
+    HUDFrame.Size                   = UDim2.new(0, HUD_W, 0, HUD_H)
+    HUDFrame.Position               = UDim2.new(1, -(HUD_W + 16), 1, -(HUD_H + 16))
+    HUDFrame.BackgroundColor3       = Theme.BgCard
+    HUDFrame.BackgroundTransparency = 0.05
+    HUDFrame.BorderSizePixel        = 0
+    HUDFrame.Parent                 = PlayerGui
+    corner(HUDFrame, 20)
+    makeStroke(HUDFrame, Theme.AccentBlue, 1, 0.78)
+
+    local TopAccent = Instance.new("Frame")
+    TopAccent.Size                   = UDim2.new(1, -60, 0, 1)
+    TopAccent.Position               = UDim2.new(0, 30, 0, 0)
+    TopAccent.BackgroundColor3       = Theme.AccentBlue
+    TopAccent.BackgroundTransparency = 0.3
+    TopAccent.BorderSizePixel        = 0
+    TopAccent.Parent                 = HUDFrame
+
+    local Header = Instance.new("Frame")
+    Header.Size                   = UDim2.new(1, 0, 0, 36)
+    Header.BackgroundColor3       = Theme.BgDark
+    Header.BackgroundTransparency = 0.1
+    Header.BorderSizePixel        = 0
+    Header.Parent                 = HUDFrame
+    corner(Header, 20)
+
+    local HeaderTitle = Instance.new("TextLabel")
+    HeaderTitle.Size                   = UDim2.new(0, 90, 1, 0)
+    HeaderTitle.Position               = UDim2.new(0, 14, 0, 0)
+    HeaderTitle.BackgroundTransparency = 1
+    HeaderTitle.Font                   = Enum.Font.GothamBold
+    HeaderTitle.TextSize               = 13
+    HeaderTitle.TextColor3             = Theme.AccentLight
+    HeaderTitle.TextXAlignment         = Enum.TextXAlignment.Left
+    HeaderTitle.Text                   = "PLAYERS"
+    HeaderTitle.Parent                 = Header
+
+    local HeaderSub = Instance.new("TextLabel")
+    HeaderSub.Size                   = UDim2.new(1, -110, 1, 0)
+    HeaderSub.Position               = UDim2.new(0, 105, 0, 0)
+    HeaderSub.BackgroundTransparency = 1
+    HeaderSub.Font                   = Enum.Font.Gotham
+    HeaderSub.TextSize               = 11
+    HeaderSub.TextColor3             = Theme.TextDim
+    HeaderSub.TextXAlignment         = Enum.TextXAlignment.Left
+    HeaderSub.Text                   = "In-Game  \194\183  ; to toggle"
+    HeaderSub.Parent                 = Header
+
+    local CountBadge = Instance.new("TextLabel")
+    CountBadge.Size                   = UDim2.new(0, 26, 0, 16)
+    CountBadge.Position               = UDim2.new(1, -36, 0.5, -8)
+    CountBadge.BackgroundColor3       = Theme.AccentDark
+    CountBadge.BackgroundTransparency = 0.3
+    CountBadge.BorderSizePixel        = 0
+    CountBadge.Font                   = Enum.Font.GothamBold
+    CountBadge.TextSize               = 10
+    CountBadge.TextColor3             = Theme.AccentLight
+    CountBadge.Text                   = "0"
+    CountBadge.TextXAlignment         = Enum.TextXAlignment.Center
+    CountBadge.Parent                 = Header
+    corner(CountBadge, 6)
+
+    -- ── Outer ScrollingFrame for the player list ───
+    -- ClipsDescendants = true so cards don't bleed outside
+    local Scroll = Instance.new("ScrollingFrame")
+    Scroll.Size                   = UDim2.new(1, -12, 1, -46)
+    Scroll.Position               = UDim2.new(0, 6, 0, 41)
+    Scroll.BackgroundTransparency = 1
+    Scroll.ScrollBarThickness     = 3
+    Scroll.ScrollBarImageColor3   = Theme.AccentBlue
+    Scroll.BorderSizePixel        = 0
+    Scroll.ClipsDescendants       = true   -- cards must not bleed through the HUD edge
+    Scroll.ScrollingDirection     = Enum.ScrollingDirection.Y
+    Scroll.Parent                 = HUDFrame
+
+    local ListLayout = Instance.new("UIListLayout")
+    ListLayout.Padding   = UDim.new(0, 5)
+    ListLayout.SortOrder = Enum.SortOrder.Name
+    ListLayout.Parent    = Scroll
+
+    -- Keep canvas height in sync with actual content
+    -- (UIListLayout.AbsoluteContentSize already includes expanded cards
+    --  because we resize the card Frame itself on open/close)
+    ListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        Scroll.CanvasSize = UDim2.new(0, 0, 0, ListLayout.AbsoluteContentSize.Y + 8)
+    end)
+
+    -- ─────────────────────────────────────────────
+    --  Tag definitions
+    -- ─────────────────────────────────────────────
+
+    local STYLE_TAGS = {
+        { id = "closets",  label = "Closets"   },
+        { id = "semirage", label = "Semi-Rage" },
+        { id = "fullrage", label = "Full Rage" },
+    }
+    local WEAPON_TAGS = {
+        { id = "bow",     label = "Uses Bow"     },
+        { id = "daggers", label = "Uses Daggers" },
+        { id = "sling",   label = "Uses Sling"   },
+        { id = "riot",    label = "Uses Riot"    },
+    }
+
+    -- _G.PlayerTags[userId][tagId] = bool
+    local playerTagStates = {}
+
+    -- ─────────────────────────────────────────────
+    --  Dropdown layout constants
+    -- ─────────────────────────────────────────────
+
+    local ITEM_H   = 28
+    local SEC_H    = 22
+    local DIV_H    = 1
+    local PAD      = 6
+    local REPORT_H = 30
+
+    -- full height of all dropdown content
+    local DD_CONTENT_H = PAD
+        + SEC_H  + (#STYLE_TAGS  * ITEM_H)
+        + PAD + DIV_H + PAD
+        + SEC_H  + (#WEAPON_TAGS * ITEM_H)
+        + PAD + DIV_H + PAD
+        + REPORT_H + PAD
+
+    -- max visible height for the dropdown panel
+    -- (capped so it never exceeds the HUD window)
+    local DD_MAX_VISIBLE = 200
+    local DD_OPEN_H = math.min(DD_CONTENT_H, DD_MAX_VISIBLE)
+
+    -- ─────────────────────────────────────────────
+    --  Toggle row
+    -- ─────────────────────────────────────────────
+
+    local function makeToggleRow(parent, tagId, label, userId)
+        local state = playerTagStates[userId][tagId]
+
+        local Row = Instance.new("Frame")
+        Row.Size                   = UDim2.new(1, 0, 0, ITEM_H)
+        Row.BackgroundTransparency = 1
+        Row.BorderSizePixel        = 0
+        Row.Parent                 = parent
+
+        local Track = Instance.new("Frame")
+        Track.Size             = UDim2.new(0, 30, 0, 16)
+        Track.Position         = UDim2.new(0, 10, 0.5, -8)
+        Track.BackgroundColor3 = state and Theme.ToggleOn or Color3.fromRGB(40, 40, 40)
+        Track.BorderSizePixel  = 0
+        Track.Parent           = Row
+        corner(Track, 8)
+
+        local Knob = Instance.new("Frame")
+        Knob.Size             = UDim2.new(0, 12, 0, 12)
+        Knob.Position         = state
+            and UDim2.new(0, 16, 0.5, -6)
+            or  UDim2.new(0, 2,  0.5, -6)
+        Knob.BackgroundColor3 = Theme.TextWhite
+        Knob.BorderSizePixel  = 0
+        Knob.Parent           = Track
+        corner(Knob, 6)
+
+        local Lbl = Instance.new("TextLabel")
+        Lbl.Size                   = UDim2.new(1, -52, 1, 0)
+        Lbl.Position               = UDim2.new(0, 48, 0, 0)
+        Lbl.BackgroundTransparency = 1
+        Lbl.Font                   = Enum.Font.Gotham
+        Lbl.TextSize               = 11
+        Lbl.TextColor3             = state and Theme.TextWhite or Theme.TextGray
+        Lbl.TextXAlignment         = Enum.TextXAlignment.Left
+        Lbl.Text                   = label
+        Lbl.Parent                 = Row
+
+        local Btn = Instance.new("TextButton")
+        Btn.Size                   = UDim2.new(1, 0, 1, 0)
+        Btn.BackgroundTransparency = 1
+        Btn.Text                   = ""
+        Btn.Parent                 = Row
+
+        Btn.MouseEnter:Connect(function()
+            Row.BackgroundTransparency = 0
+            Row.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+        end)
+        Btn.MouseLeave:Connect(function()
+            Row.BackgroundTransparency = 1
+        end)
+
+        Btn.MouseButton1Click:Connect(function()
+            local newState = not playerTagStates[userId][tagId]
+            playerTagStates[userId][tagId] = newState
+
+            tw(Knob, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
+                Position = newState
+                    and UDim2.new(0, 16, 0.5, -6)
+                    or  UDim2.new(0, 2,  0.5, -6)
+            })
+            tw(Track, TweenInfo.new(0.15), {
+                BackgroundColor3 = newState and Theme.ToggleOn or Color3.fromRGB(40, 40, 40)
+            })
+            tw(Lbl, TweenInfo.new(0.12), {
+                TextColor3 = newState and Theme.TextWhite or Theme.TextGray
+            })
+        end)
+    end
+
+    local function makeSectionHeader(parent, text)
+        local Hdr = Instance.new("TextLabel")
+        Hdr.Size                   = UDim2.new(1, -16, 0, SEC_H)
+        Hdr.BackgroundTransparency = 1
+        Hdr.Font                   = Enum.Font.GothamBold
+        Hdr.TextSize               = 9
+        Hdr.TextColor3             = Theme.AccentBlue
+        Hdr.TextXAlignment         = Enum.TextXAlignment.Left
+        Hdr.Text                   = string.upper(text)
+        Hdr.Parent                 = parent
+        -- give it left padding via layout UIPadding on the scroll
+    end
+
+    local function makeDivider(parent)
+        local D = Instance.new("Frame")
+        D.Size                   = UDim2.new(1, -20, 0, DIV_H)
+        D.BackgroundColor3       = Theme.AccentBlue
+        D.BackgroundTransparency = 0.8
+        D.BorderSizePixel        = 0
+        D.Parent                 = parent
+    end
+
+    -- ─────────────────────────────────────────────
+    --  Dropdown builder
+    --  Returns (outerFrame, toggleFn)
+    --
+    --  Structure:
+    --    outerFrame  (Frame, height animated 0 → DD_OPEN_H)
+    --      └─ ddScroll  (ScrollingFrame, fills outerFrame)
+    --           └─ ddList  (UIListLayout)
+    --           └─ padding / section headers / toggle rows / dividers / report btn
+    --
+    --  The outer card Frame is resized by toggleFn so UIListLayout
+    --  on the parent Scroll sees the correct total height.
+    -- ─────────────────────────────────────────────
+
+    local function makeDropdown(cardFrame, player)
+        local userId = player.UserId
+
+        if not playerTagStates[userId] then
+            playerTagStates[userId] = {}
+            for _, t in ipairs(STYLE_TAGS)  do playerTagStates[userId][t.id] = false end
+            for _, t in ipairs(WEAPON_TAGS) do playerTagStates[userId][t.id] = false end
+        end
+
+        -- Outer clipping frame — height tweened
+        local Outer = Instance.new("Frame")
+        Outer.Size                   = UDim2.new(1, -10, 0, 0)
+        Outer.Position               = UDim2.new(0, 5, 0, CARD_BASE_H + 4)
+        Outer.BackgroundColor3       = Theme.BgDeep
+        Outer.BackgroundTransparency = 0.04
+        Outer.BorderSizePixel        = 0
+        Outer.ClipsDescendants       = true
+        Outer.Parent                 = cardFrame
+        corner(Outer, 12)
+        makeStroke(Outer, Theme.AccentBlue, 1, 0.78)
+
+        -- Inner ScrollingFrame — scrollable if content > DD_MAX_VISIBLE
+        local ddScroll = Instance.new("ScrollingFrame")
+        ddScroll.Size                   = UDim2.new(1, 0, 1, 0)
+        ddScroll.BackgroundTransparency = 1
+        ddScroll.ScrollBarThickness     = 3
+        ddScroll.ScrollBarImageColor3   = Theme.AccentBlue
+        ddScroll.BorderSizePixel        = 0
+        ddScroll.ScrollingDirection     = Enum.ScrollingDirection.Y
+        ddScroll.CanvasSize             = UDim2.new(0, 0, 0, DD_CONTENT_H)
+        ddScroll.Parent                 = Outer
+
+        local ddPad = Instance.new("UIPadding")
+        ddPad.PaddingLeft  = UDim.new(0, 8)
+        ddPad.PaddingRight = UDim.new(0, 8)
+        ddPad.Parent       = ddScroll
+
+        local ddList = Instance.new("UIListLayout")
+        ddList.Padding   = UDim.new(0, 0)
+        ddList.SortOrder = Enum.SortOrder.LayoutOrder
+        ddList.Parent    = ddScroll
+
+        -- ── Spacer (top padding) ────────────────────
+        local topSpacer = Instance.new("Frame")
+        topSpacer.Size                   = UDim2.new(1, 0, 0, PAD)
+        topSpacer.BackgroundTransparency = 1
+        topSpacer.BorderSizePixel        = 0
+        topSpacer.LayoutOrder            = 0
+        topSpacer.Parent                 = ddScroll
+
+        -- ── Playstyle section ──────────────────────
+        local styleHdr = Instance.new("TextLabel")
+        styleHdr.Size                   = UDim2.new(1, 0, 0, SEC_H)
+        styleHdr.BackgroundTransparency = 1
+        styleHdr.Font                   = Enum.Font.GothamBold
+        styleHdr.TextSize               = 9
+        styleHdr.TextColor3             = Theme.AccentBlue
+        styleHdr.TextXAlignment         = Enum.TextXAlignment.Left
+        styleHdr.Text                   = "PLAYSTYLE"
+        styleHdr.LayoutOrder            = 1
+        styleHdr.Parent                 = ddScroll
+
+        for i, tag in ipairs(STYLE_TAGS) do
+            local row = Instance.new("Frame")
+            row.Size                   = UDim2.new(1, 0, 0, ITEM_H)
+            row.BackgroundTransparency = 1
+            row.BorderSizePixel        = 0
+            row.LayoutOrder            = 1 + i
+            row.Parent                 = ddScroll
+
+            local Track = Instance.new("Frame")
+            Track.Size             = UDim2.new(0, 30, 0, 16)
+            Track.Position         = UDim2.new(0, 2, 0.5, -8)
+            Track.BackgroundColor3 = playerTagStates[userId][tag.id] and Theme.ToggleOn or Color3.fromRGB(40, 40, 40)
+            Track.BorderSizePixel  = 0
+            Track.Parent           = row
+            corner(Track, 8)
+
+            local Knob = Instance.new("Frame")
+            Knob.Size             = UDim2.new(0, 12, 0, 12)
+            Knob.Position         = playerTagStates[userId][tag.id]
+                and UDim2.new(0, 16, 0.5, -6)
+                or  UDim2.new(0, 2,  0.5, -6)
+            Knob.BackgroundColor3 = Theme.TextWhite
+            Knob.BorderSizePixel  = 0
+            Knob.Parent           = Track
+            corner(Knob, 6)
+
+            local Lbl = Instance.new("TextLabel")
+            Lbl.Size                   = UDim2.new(1, -42, 1, 0)
+            Lbl.Position               = UDim2.new(0, 40, 0, 0)
+            Lbl.BackgroundTransparency = 1
+            Lbl.Font                   = Enum.Font.Gotham
+            Lbl.TextSize               = 11
+            Lbl.TextColor3             = playerTagStates[userId][tag.id] and Theme.TextWhite or Theme.TextGray
+            Lbl.TextXAlignment         = Enum.TextXAlignment.Left
+            Lbl.Text                   = tag.label
+            Lbl.Parent                 = row
+
+            local Btn = Instance.new("TextButton")
+            Btn.Size                   = UDim2.new(1, 0, 1, 0)
+            Btn.BackgroundTransparency = 1
+            Btn.Text                   = ""
+            Btn.Parent                 = row
+
+            Btn.MouseEnter:Connect(function()
+                row.BackgroundTransparency = 0
+                row.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+            end)
+            Btn.MouseLeave:Connect(function()
+                row.BackgroundTransparency = 1
+            end)
+
+            local tagId = tag.id
+            Btn.MouseButton1Click:Connect(function()
+                local ns = not playerTagStates[userId][tagId]
+                playerTagStates[userId][tagId] = ns
+                tw(Knob, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
+                    Position = ns and UDim2.new(0,16,0.5,-6) or UDim2.new(0,2,0.5,-6)
+                })
+                tw(Track, TweenInfo.new(0.15), {
+                    BackgroundColor3 = ns and Theme.ToggleOn or Color3.fromRGB(40,40,40)
+                })
+                tw(Lbl, TweenInfo.new(0.12), {
+                    TextColor3 = ns and Theme.TextWhite or Theme.TextGray
+                })
+            end)
+        end
+
+        -- divider
+        local div1 = Instance.new("Frame")
+        div1.Size                   = UDim2.new(1, 0, 0, PAD + DIV_H + PAD)
+        div1.BackgroundTransparency = 1
+        div1.BorderSizePixel        = 0
+        div1.LayoutOrder            = 10
+        div1.Parent                 = ddScroll
+
+        local divLine1 = Instance.new("Frame")
+        divLine1.Size                   = UDim2.new(1, 0, 0, 1)
+        divLine1.Position               = UDim2.new(0, 0, 0, PAD)
+        divLine1.BackgroundColor3       = Theme.AccentBlue
+        divLine1.BackgroundTransparency = 0.8
+        divLine1.BorderSizePixel        = 0
+        divLine1.Parent                 = div1
+
+        -- ── Weapons section ────────────────────────
+        local weapHdr = Instance.new("TextLabel")
+        weapHdr.Size                   = UDim2.new(1, 0, 0, SEC_H)
+        weapHdr.BackgroundTransparency = 1
+        weapHdr.Font                   = Enum.Font.GothamBold
+        weapHdr.TextSize               = 9
+        weapHdr.TextColor3             = Theme.AccentBlue
+        weapHdr.TextXAlignment         = Enum.TextXAlignment.Left
+        weapHdr.Text                   = "WEAPONS"
+        weapHdr.LayoutOrder            = 11
+        weapHdr.Parent                 = ddScroll
+
+        for i, tag in ipairs(WEAPON_TAGS) do
+            local row = Instance.new("Frame")
+            row.Size                   = UDim2.new(1, 0, 0, ITEM_H)
+            row.BackgroundTransparency = 1
+            row.BorderSizePixel        = 0
+            row.LayoutOrder            = 11 + i
+            row.Parent                 = ddScroll
+
+            local Track = Instance.new("Frame")
+            Track.Size             = UDim2.new(0, 30, 0, 16)
+            Track.Position         = UDim2.new(0, 2, 0.5, -8)
+            Track.BackgroundColor3 = playerTagStates[userId][tag.id] and Theme.ToggleOn or Color3.fromRGB(40, 40, 40)
+            Track.BorderSizePixel  = 0
+            Track.Parent           = row
+            corner(Track, 8)
+
+            local Knob = Instance.new("Frame")
+            Knob.Size             = UDim2.new(0, 12, 0, 12)
+            Knob.Position         = playerTagStates[userId][tag.id]
+                and UDim2.new(0, 16, 0.5, -6)
+                or  UDim2.new(0, 2,  0.5, -6)
+            Knob.BackgroundColor3 = Theme.TextWhite
+            Knob.BorderSizePixel  = 0
+            Knob.Parent           = Track
+            corner(Knob, 6)
+
+            local Lbl = Instance.new("TextLabel")
+            Lbl.Size                   = UDim2.new(1, -42, 1, 0)
+            Lbl.Position               = UDim2.new(0, 40, 0, 0)
+            Lbl.BackgroundTransparency = 1
+            Lbl.Font                   = Enum.Font.Gotham
+            Lbl.TextSize               = 11
+            Lbl.TextColor3             = playerTagStates[userId][tag.id] and Theme.TextWhite or Theme.TextGray
+            Lbl.TextXAlignment         = Enum.TextXAlignment.Left
+            Lbl.Text                   = tag.label
+            Lbl.Parent                 = row
+
+            local Btn = Instance.new("TextButton")
+            Btn.Size                   = UDim2.new(1, 0, 1, 0)
+            Btn.BackgroundTransparency = 1
+            Btn.Text                   = ""
+            Btn.Parent                 = row
+
+            Btn.MouseEnter:Connect(function()
+                row.BackgroundTransparency = 0
+                row.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+            end)
+            Btn.MouseLeave:Connect(function()
+                row.BackgroundTransparency = 1
+            end)
+
+            local tagId = tag.id
+            Btn.MouseButton1Click:Connect(function()
+                local ns = not playerTagStates[userId][tagId]
+                playerTagStates[userId][tagId] = ns
+                tw(Knob, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
+                    Position = ns and UDim2.new(0,16,0.5,-6) or UDim2.new(0,2,0.5,-6)
+                })
+                tw(Track, TweenInfo.new(0.15), {
+                    BackgroundColor3 = ns and Theme.ToggleOn or Color3.fromRGB(40,40,40)
+                })
+                tw(Lbl, TweenInfo.new(0.12), {
+                    TextColor3 = ns and Theme.TextWhite or Theme.TextGray
+                })
+            end)
+        end
+
+        -- divider 2
+        local div2 = Instance.new("Frame")
+        div2.Size                   = UDim2.new(1, 0, 0, PAD + DIV_H + PAD)
+        div2.BackgroundTransparency = 1
+        div2.BorderSizePixel        = 0
+        div2.LayoutOrder            = 20
+        div2.Parent                 = ddScroll
+
+        local divLine2 = Instance.new("Frame")
+        divLine2.Size                   = UDim2.new(1, 0, 0, 1)
+        divLine2.Position               = UDim2.new(0, 0, 0, PAD)
+        divLine2.BackgroundColor3       = Theme.AccentBlue
+        divLine2.BackgroundTransparency = 0.8
+        divLine2.BorderSizePixel        = 0
+        divLine2.Parent                 = div2
+
+        -- ── Send Report ────────────────────────────
+        local reportWrap = Instance.new("Frame")
+        reportWrap.Size                   = UDim2.new(1, 0, 0, REPORT_H + PAD)
+        reportWrap.BackgroundTransparency = 1
+        reportWrap.BorderSizePixel        = 0
+        reportWrap.LayoutOrder            = 21
+        reportWrap.Parent                 = ddScroll
+
+        local ReportBtn = Instance.new("TextButton")
+        ReportBtn.Size                   = UDim2.new(1, 0, 0, REPORT_H)
+        ReportBtn.BackgroundColor3       = Theme.ReportRed
+        ReportBtn.BackgroundTransparency = 0.25
+        ReportBtn.BorderSizePixel        = 0
+        ReportBtn.Font                   = Enum.Font.GothamBold
+        ReportBtn.TextSize               = 11
+        ReportBtn.TextColor3             = Color3.fromRGB(255, 190, 190)
+        ReportBtn.Text                   = "Send Report"
+        ReportBtn.Parent                 = reportWrap
+        corner(ReportBtn, 8)
+        makeStroke(ReportBtn, Theme.ReportRed, 1, 0.5)
+
+        ReportBtn.MouseEnter:Connect(function()
+            tw(ReportBtn, TweenInfo.new(0.12), { BackgroundTransparency = 0.05 })
+        end)
+        ReportBtn.MouseLeave:Connect(function()
+            tw(ReportBtn, TweenInfo.new(0.12), { BackgroundTransparency = 0.25 })
+        end)
+
+        ReportBtn.MouseButton1Click:Connect(function()
+            local activeTags = {}
+            for _, tag in ipairs(STYLE_TAGS) do
+                if playerTagStates[userId][tag.id] then
+                    table.insert(activeTags, tag.label)
+                end
+            end
+            for _, tag in ipairs(WEAPON_TAGS) do
+                if playerTagStates[userId][tag.id] then
+                    table.insert(activeTags, tag.label)
+                end
+            end
+            local tagStr = #activeTags > 0 and table.concat(activeTags, ", ") or "No tags selected"
+
+            -- ↓ wire your remote here ↓
+            -- ReportRemote:FireServer(player, activeTags)
+
+            Notify:Send({
+                Type        = "warning",
+                Title       = "Report Sent",
+                Description = player.Name .. "\n" .. tagStr,
+                Duration    = 5,
+            })
+        end)
+
+        -- ── open / close ───────────────────────────
+        -- When the dropdown opens we grow the card Frame so UIListLayout
+        -- on the outer Scroll sees the new total height and updates CanvasSize.
+        local isOpen = false
+        local tweenInfo = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+        local function toggle()
+            isOpen = not isOpen
+            local targetCardH  = isOpen and (CARD_BASE_H + 4 + DD_OPEN_H) or CARD_BASE_H
+            local targetOuterH = isOpen and DD_OPEN_H or 0
+
+            tw(Outer,     tweenInfo, { Size = UDim2.new(1, -10, 0, targetOuterH) })
+            tw(cardFrame, tweenInfo, { Size = UDim2.new(1, 0,   0, targetCardH)  })
+        end
+
+        return Outer, toggle
+    end
+
+    -- ─────────────────────────────────────────────
+    --  Player card builder
+    -- ─────────────────────────────────────────────
+
+    local playerCards = {}
+
+    local function makePlayerCard(player)
+        if player == LocalPlayer then return end
+        if playerCards[player.UserId] then return end
+
+        -- Card starts at CARD_BASE_H; grows when dropdown opens
+        local Card = Instance.new("Frame")
+        Card.Name             = player.Name
+        Card.Size             = UDim2.new(1, 0, 0, CARD_BASE_H)
+        Card.BackgroundColor3 = Theme.BgDark
+        Card.BorderSizePixel  = 0
+        Card.ClipsDescendants = false   -- dropdown must be visible outside card bounds
+        Card.Parent           = Scroll
+        corner(Card, 14)
+        makeStroke(Card, Theme.AccentBlue, 1, 0.84)
+
+        local SideBar = Instance.new("Frame")
+        SideBar.Size                   = UDim2.new(0, 2, 0, CARD_BASE_H - 16)
+        SideBar.Position               = UDim2.new(0, 0, 0, 8)
+        SideBar.BackgroundColor3       = Theme.AccentBlue
+        SideBar.BackgroundTransparency = 0.3
+        SideBar.BorderSizePixel        = 0
+        SideBar.Parent                 = Card
+        corner(SideBar, 2)
+
+        local AvatarBg = Instance.new("Frame")
+        AvatarBg.Size             = UDim2.new(0, 44, 0, 44)
+        AvatarBg.Position         = UDim2.new(0, 10, 0, 10)
+        AvatarBg.BackgroundColor3 = Theme.AccentDark
+        AvatarBg.BorderSizePixel  = 0
+        AvatarBg.Parent           = Card
+        corner(AvatarBg, 22)
+
+        local Avatar = Instance.new("ImageLabel")
+        Avatar.Size                   = UDim2.new(1, 0, 1, 0)
+        Avatar.BackgroundTransparency = 1
+        Avatar.Image                  = "rbxthumb://type=AvatarHeadShot&id=" .. player.UserId .. "&w=150&h=150"
+        Avatar.Parent                 = AvatarBg
+        corner(Avatar, 22)
+
+        local NameLabel = Instance.new("TextLabel")
+        NameLabel.Size                   = UDim2.new(1, -116, 0, 18)
+        NameLabel.Position               = UDim2.new(0, 62, 0, 10)
+        NameLabel.BackgroundTransparency = 1
+        NameLabel.Font                   = Enum.Font.GothamBold
+        NameLabel.TextSize               = 12
+        NameLabel.TextColor3             = Theme.TextWhite
+        NameLabel.TextXAlignment         = Enum.TextXAlignment.Left
+        NameLabel.Text                   = player.Name
+        NameLabel.Parent                 = Card
+
+        local DisplayLabel = Instance.new("TextLabel")
+        DisplayLabel.Size                   = UDim2.new(1, -116, 0, 14)
+        DisplayLabel.Position               = UDim2.new(0, 62, 0, 30)
+        DisplayLabel.BackgroundTransparency = 1
+        DisplayLabel.Font                   = Enum.Font.Gotham
+        DisplayLabel.TextSize               = 10
+        DisplayLabel.TextColor3             = Theme.TextDim
+        DisplayLabel.TextXAlignment         = Enum.TextXAlignment.Left
+        DisplayLabel.Text                   = player.DisplayName ~= player.Name
+            and player.DisplayName
+            or  "@" .. player.Name
+        DisplayLabel.Parent                 = Card
+
+        local ActionBtn = Instance.new("TextButton")
+        ActionBtn.Size                   = UDim2.new(0, 38, 0, 22)
+        ActionBtn.Position               = UDim2.new(1, -48, 0, 21)
+        ActionBtn.BackgroundColor3       = Theme.AccentDark
+        ActionBtn.BackgroundTransparency = 0.2
+        ActionBtn.BorderSizePixel        = 0
+        ActionBtn.Font                   = Enum.Font.GothamBold
+        ActionBtn.TextSize               = 16
+        ActionBtn.TextColor3             = Theme.AccentLight
+        ActionBtn.Text                   = "⋯"
+        ActionBtn.ZIndex                 = 5
+        ActionBtn.Parent                 = Card
+        corner(ActionBtn, 8)
+
+        local _, toggleDD = makeDropdown(Card, player)
+
+        ActionBtn.MouseButton1Click:Connect(toggleDD)
+
+        Card.MouseEnter:Connect(function()
+            tw(Card, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(26, 26, 26) })
+        end)
+        Card.MouseLeave:Connect(function()
+            tw(Card, TweenInfo.new(0.15), { BackgroundColor3 = Theme.BgDark })
+        end)
+
+        playerCards[player.UserId] = Card
+        CountBadge.Text = tostring(#Players:GetPlayers() - 1)
+    end
+
+    local function removePlayerCard(player)
+        local card = playerCards[player.UserId]
+        if card then
+            card:Destroy()
+            playerCards[player.UserId] = nil
+        end
+        playerTagStates[player.UserId] = nil
+        CountBadge.Text = tostring(math.max(0, #Players:GetPlayers() - 1))
+    end
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        makePlayerCard(p)
+    end
+
+    Players.PlayerAdded:Connect(function(p)
+        task.wait(0.3)
+        makePlayerCard(p)
+        Notify:Send({
+            Type        = "info",
+            Title       = "Player Joined",
+            Description = p.Name .. " joined the server.",
+            Duration    = 4,
+        })
+    end)
+
+    Players.PlayerRemoving:Connect(function(p)
+        removePlayerCard(p)
+        Notify:Send({
+            Type        = "normal",
+            Title       = "Player Left",
+            Description = p.Name .. " left the server.",
+            Duration    = 3,
+        })
+    end)
+
+    -- ══════════════════════════════════════════════
+    --  EXPOSE GLOBALS
+    -- ══════════════════════════════════════════════
+
+    --[[
+        _G.Notify:Send({ Title="Hello", Description="World", Duration=5 })
+        _G.Notify:Send({ Type="warning", Title="Warn",  Description="..." })
+        _G.Notify:Send({ Type="info",    Title="Info",  Description="..." })
+        _G.Notify:Send({
+            Type="warning", Title="Confirm?", Confirm=true, Duration=15,
+            OnConfirm = function(ok) print(ok) end,
+        })
+
+        -- Read tags from anywhere:
+        -- _G.PlayerTags[userId]["closets"]  → bool
+        -- _G.PlayerTags[userId]["riot"]     → bool
+    --]]
+
+    _G.Notify     = Notify
+    _G.PlayerTags = playerTagStates
+
+end
