@@ -101,22 +101,53 @@ if not _G.GUIFrameworkLoaded then
         CachedEntries = entries
         return entries
     end
+
+    local function fetchRawBase()
+        local raw = game:HttpGet(RAW_URL)
+        local content = raw:match("%[%[(.-)%]%]") or ""
+        content = content:gsub("\r", "")
+        
+        local baseEntries = {}
+        for line in content:gmatch("[^\n]+") do
+            line = line:match("^%s*(.-)%s*$")
+            if line ~= "" and line:find('%["') then
+                table.insert(baseEntries, line:gsub(",$", ""))
+            end
+        end
+        return baseEntries
+    end
     
     local function pushEntries()
         if not CachedEntries or isUpdating then return end
         isUpdating = true
     
-        local newContent = "local cheaters = [[\n"
+        -- fetch original entries from GitHub as base
+        local baseEntries = fetchRawBase()
     
-        for i, v in ipairs(CachedEntries) do
+        -- merge new entries (avoid duplicates)
+        local merged = {}
+        local seen = {}
+        for _, v in ipairs(baseEntries) do
+            seen[v] = true
+            table.insert(merged, v)
+        end
+        for _, v in ipairs(CachedEntries) do
+            if not seen[v] then
+                table.insert(merged, v)
+                seen[v] = true
+            end
+        end
+    
+        -- rebuild content
+        local newContent = "local cheaters = [[\n"
+        for i, v in ipairs(merged) do
             newContent = newContent .. v
-            if i < #CachedEntries then
+            if i < #merged then
                 newContent = newContent .. ",\n"
             else
                 newContent = newContent .. "\n"
             end
         end
-    
         newContent = newContent .. "]]\n\nreturn cheaters"
     
         editFile(newContent)
