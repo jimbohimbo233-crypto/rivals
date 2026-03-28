@@ -1,5 +1,4 @@
-local cheaters = [[
-[10634021379, "Full Rage"],
+local cheaters = [[[10634021379, "Full Rage"],
 [10669801845, "Full Rage"],
 [10459414812, "Full Rage"],
 [10566130421, "Full Rage"],
@@ -332,6 +331,6 @@ local cheaters = [[
 [6048901376, "Full Rage"],
 [9377722545, "Full Rage"],
 [4148969579, "Full Rage"]
-]]
+[10439412524, "Closets", "Semi-Rage"]]]
 
 return cheaters
