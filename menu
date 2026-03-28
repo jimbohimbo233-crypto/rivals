@@ -1,8 +1,4 @@
-
-
 if not _G.GUIFrameworkLoaded then
-    --// ADD THIS NEAR TOP (after services)
-
     local HttpService = game:GetService("HttpService")
     local GITHUB_TOKEN = readfile("dpsgithub.txt")
 
@@ -10,13 +6,12 @@ if not _G.GUIFrameworkLoaded then
     local REPO      = "rivals"
     local FILE_PATH = "rankedCheaterListv2"
     local BRANCH    = "main"
-    
+
     local API_BASE  = "https://api.github.com/repos/" .. OWNER .. "/" .. REPO .. "/contents/" .. FILE_PATH
-    local RAW_URL   = "https://raw.githubusercontent.com/" .. OWNER .. "/" .. REPO .. "/refs/heads/" .. BRANCH .. "/" .. FILE_PATH
-    
-    -- base64 (unchanged)
-    local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    local RAW_URL   = "https://raw.githubusercontent.com/" .. OWNER .. "/" .. REPO .. "/" .. BRANCH .. "/" .. FILE_PATH
+
     local function base64Encode(data)
+        local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
         return ((data:gsub(".", function(x)
             local r, b = "", x:byte()
             for i = 8, 1, -1 do
@@ -34,7 +29,7 @@ if not _G.GUIFrameworkLoaded then
             return b64chars:sub(c+1, c+1)
         end) .. ({ "", "==", "=" })[#data % 3 + 1])
     end
-    
+
     local function getFileSha()
         local res = request({
             Url = API_BASE .. "?ref=" .. BRANCH,
@@ -44,15 +39,14 @@ if not _G.GUIFrameworkLoaded then
                 ["Accept"] = "application/vnd.github+json",
             }
         })
-    
         local data = HttpService:JSONDecode(res.Body)
         if not data or not data.sha then
             error("SHA fetch failed:\n" .. res.Body)
         end
         return data.sha
     end
-    
-    local function editFile(content)
+
+    local function editFile(newContent)
         local res = request({
             Url = API_BASE,
             Method = "PUT",
@@ -62,100 +56,130 @@ if not _G.GUIFrameworkLoaded then
                 ["Content-Type"] = "application/json",
             },
             Body = HttpService:JSONEncode({
-                message = "update reports",
-                content = base64Encode(content),
+                message = "append new reports",
+                content = base64Encode(newContent),
                 sha = getFileSha(),
                 branch = BRANCH
             })
         })
-    
         print("GitHub:", res.StatusCode)
     end
-    
+
     --// CACHE SYSTEM
-    local CachedEntries = nil
+    local CachedEntries = {}
     local isUpdating = false
-    
+
+    -- fetch the raw file content and parse existing entries
     local function fetchEntries()
-        if CachedEntries then return CachedEntries end
-    
+        if #CachedEntries > 0 then return CachedEntries end
+
         local raw = game:HttpGet(RAW_URL)
-        local content = raw:match("%[%[(.-)%]%]")
-    
-        if not content then
-            warn("Failed to parse file")
-            CachedEntries = {}
-            return CachedEntries
-        end
-    
+        local content = raw:match("%[%[(.-)%]%]") or ""
+
         content = content:gsub("\r", "")
-    
+
         local entries = {}
         for line in content:gmatch("[^\n]+") do
             line = line:match("^%s*(.-)%s*$")
-            if line ~= "" and line:find('%["') then
-                table.insert(entries, line:gsub(",$", ""))
+            if line ~= "" then
+                table.insert(entries, line)
             end
         end
-    
+
         CachedEntries = entries
-        return entries
+        return CachedEntries
     end
 
-    local function fetchRawBase()
-        local raw = game:HttpGet(RAW_URL)
-        local content = raw:match("%[%[(.-)%]%]") or ""
-        content = content:gsub("\r", "")
-        
-        local baseEntries = {}
-        for line in content:gmatch("[^\n]+") do
-            line = line:match("^%s*(.-)%s*$")
-            if line ~= "" and line:find('%["') then
-                table.insert(baseEntries, line:gsub(",$", ""))
+    -- append new reports safely onto the existing file
+    -- append new reports safely onto the existing file
+local function pushEntries(newReports)
+    if isUpdating then return end
+    isUpdating = true
+
+    -- fetch latest raw content
+    local rawText = game:HttpGet(RAW_URL)
+
+    local startIdx, endIdx = rawText:find("%[%[")
+    local closeIdx = rawText:find("%]%]", endIdx)
+    if not startIdx or not closeIdx then
+        warn("Could not find cheaters block in GitHub file")
+        isUpdating = false
+        return
+    end
+
+    local existingContent = rawText:sub(endIdx + 1, closeIdx - 1)
+    existingContent = existingContent:gsub("\r", "")
+
+    -- Parse existing entries into a table with userId as key for easy lookup
+    local entriesMap = {}
+    local entriesList = {}
+    
+    for line in existingContent:gmatch("[^\n]+") do
+        line = line:match("^%s*(.-)%s*$")
+        if line ~= "" then
+            -- Extract userId from the entry
+            local userId = line:match("^%[(%d+),")
+            if userId then
+                userId = tonumber(userId)
+                entriesMap[userId] = line
+                table.insert(entriesList, {userId = userId, line = line})
             end
         end
-        return baseEntries
+    end
+
+    -- Update or add new entries
+    for _, report in ipairs(newReports) do
+        -- Extract userId from the report
+        local userId = report:match("^%[(%d+),")
+        if userId then
+            userId = tonumber(userId)
+            -- Ensure the entry ends with a comma
+            if not report:match(",$") then
+                report = report .. ","
+            end
+            entriesMap[userId] = report
+        end
+    end
+
+    -- Rebuild the entries list with proper formatting
+    local lines = {}
+    for userId, entry in pairs(entriesMap) do
+        table.insert(lines, entry)
+        -- Update cache
+        CachedEntries[userId] = entry
     end
     
-    local function pushEntries()
-        if not CachedEntries or isUpdating then return end
-        isUpdating = true
-    
-        -- fetch original entries from GitHub as base
-        local baseEntries = fetchRawBase()
-    
-        -- merge new entries (avoid duplicates)
-        local merged = {}
-        local seen = {}
-        for _, v in ipairs(baseEntries) do
-            seen[v] = true
-            table.insert(merged, v)
-        end
-        for _, v in ipairs(CachedEntries) do
-            if not seen[v] then
-                table.insert(merged, v)
-                seen[v] = true
+    -- Sort entries by userId for consistent ordering
+    table.sort(lines, function(a, b)
+        local idA = a:match("^%[(%d+),")
+        local idB = b:match("^%[(%d+),")
+        return tonumber(idA) < tonumber(idB)
+    end)
+
+    -- Add a trailing comma to all entries except the last one
+    for i = 1, #lines do
+        if i < #lines then
+            if not lines[i]:match(",$") then
+                lines[i] = lines[i] .. ","
             end
+        else
+            -- Last entry should not have a comma
+            lines[i] = lines[i]:gsub(",$", "")
         end
-    
-        -- rebuild content
-        local newContent = "local cheaters = [[\n"
-        for i, v in ipairs(merged) do
-            newContent = newContent .. v
-            if i < #merged then
-                newContent = newContent .. ",\n"
-            else
-                newContent = newContent .. "\n"
-            end
-        end
-        newContent = newContent .. "]]\n\nreturn cheaters"
-    
-        editFile(newContent)
-    
-        task.delay(2, function()
-            isUpdating = false
-        end)
     end
+
+    -- Rebuild the cheaters block inside original raw content
+    local newContent = rawText:sub(1, endIdx) ..
+                       table.concat(lines, "\n") ..
+                       rawText:sub(closeIdx)
+
+    editFile(newContent)
+
+    task.delay(2, function()
+        isUpdating = false
+    end)
+end
+
     _G.GUIFrameworkLoaded = true
 
     -- ─────────────────────────────────────────────
@@ -979,69 +1003,53 @@ if not _G.GUIFrameworkLoaded then
         end)
 
         ReportBtn.MouseButton1Click:Connect(function()
-            local activeTags = {}
-        
-            for _, tag in ipairs(STYLE_TAGS) do
-                if playerTagStates[userId][tag.id] then
-                    table.insert(activeTags, tag.label)
-                end
-            end
-            for _, tag in ipairs(WEAPON_TAGS) do
-                if playerTagStates[userId][tag.id] then
-                    table.insert(activeTags, tag.label)
-                end
-            end
-        
-            if #activeTags == 0 then
-                Notify:Send({
-                    Type = "warning",
-                    Title = "No Tags",
-                    Description = "Select at least one tag",
-                    Duration = 4
-                })
-                return
-            end
-        
-            local entries = fetchEntries()
-        
-            -- build new entry using USERID
-            local formatted = {}
-            for _, tag in ipairs(activeTags) do
-                table.insert(formatted, string.format('"%s"', tag))
-            end
-        
-            local newEntry = string.format(
-                '[%d, %s]',
-                player.UserId,
-                table.concat(formatted, ", ")
-            )
-        
-            -- check if userid already exists → replace
-            local replaced = false
-        
-            for i, entry in ipairs(entries) do
-                local existingId = entry:match("^%[(%d+),")
-                if existingId and tonumber(existingId) == player.UserId then
-                    entries[i] = newEntry
-                    replaced = true
-                    break
-                end
-            end
-        
-            -- if not found → insert new
-            if not replaced then
-                table.insert(entries, newEntry)
-            end
-        
-            pushEntries()
-        
-            Notify:Send({
-                Type        = "warning",
-                Title       = replaced and "Report Updated" or "Report Added",
-                Description = player.Name .. "\n" .. table.concat(activeTags, ", "),
-                Duration    = 5
-            })
-        end)
+    local activeTags = {}
+
+    for _, tag in ipairs(STYLE_TAGS) do
+        if playerTagStates[userId][tag.id] then
+            table.insert(activeTags, string.format('"%s"', tag.label))
+        end
+    end
+    for _, tag in ipairs(WEAPON_TAGS) do
+        if playerTagStates[userId][tag.id] then
+            table.insert(activeTags, string.format('"%s"', tag.label))
+        end
+    end
+
+    if #activeTags == 0 then
+        Notify:Send({
+            Type = "warning",
+            Title = "No Tags",
+            Description = "Select at least one tag",
+            Duration = 4
+        })
+        return
+    end
+
+    -- Build the new entry with proper formatting
+    local newEntry = string.format('[%d, %s]', player.UserId, table.concat(activeTags, ", "))
+    
+    -- Pass the new entry as a table with one element
+    pushEntries({newEntry})
+
+    -- Check if this is an update or new report
+    local isUpdate = false
+    local existingEntries = fetchEntries()
+    for _, entry in ipairs(existingEntries) do
+        local existingId = entry:match("^%[(%d+),")
+        if existingId and tonumber(existingId) == player.UserId then
+            isUpdate = true
+            break
+        end
+    end
+
+    Notify:Send({
+        Type        = "warning",
+        Title       = isUpdate and "Report Updated" or "Report Added",
+        Description = player.Name .. "\n" .. table.concat(activeTags, ", "),
+        Duration    = 5
+    })
+end)
 
         -- ── open / close ───────────────────────────
         -- When the dropdown opens we grow the card Frame so UIListLayout
