@@ -4,8 +4,8 @@ if not _G.GUIFrameworkLoaded then
     --// ADD THIS NEAR TOP (after services)
 
     local HttpService = game:GetService("HttpService")
-    
-    local GITHUB_TOKEN = "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"
+    local GITHUB_TOKEN = readfile("dpsgithub.txt")
+
     local OWNER     = "jimbohimbo233-crypto"
     local REPO      = "rivals"
     local FILE_PATH = "rankedCheaterListv2"
