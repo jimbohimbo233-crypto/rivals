@@ -1171,6 +1171,4 @@ if not _G.GUIFrameworkLoaded then
 
     _G.Notify     = Notify
     _G.PlayerTags = playerTagStates
-
-    print("[GUI Framework] Loaded — ';' toggles the player HUD | notifications always on")
 end
