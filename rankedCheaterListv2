@@ -1,5 +1,7 @@
 local cheaters = [[
-["test24", 6, "n"]
+["data 1", 3, "2"],
+["data 2", 1, "4"],
+["data 3", 2, "5"]
 ]]
 
 return cheaters
