@@ -1,5 +1,4 @@
-local cheaters = [[
-[7211825448, "Closets", "Semi-Rage", "Full Rage"]
-]]
+local cheaters = [[[7211825448, "Closets", "Semi-Rage", "Full Rage"],
+[10440177601, "Closets", "Semi-Rage"]]]
 
 return cheaters
