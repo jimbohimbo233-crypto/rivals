@@ -1,6 +1,5 @@
 local cheaters = [[
 [55810, "Full Rage"],
-[2732218508, "Full Rage", "Uses Daggers"],
 [813154, "Full Rage"],
 [1395613, "Full Rage"],
 [1926067, "Full Rage"],
@@ -34,6 +33,7 @@ local cheaters = [[
 [1445107674, "Full Rage"],
 [1495353140, "Full Rage"],
 [1511533742, "Full Rage"],
+[1515970788, "Semi-Rage"],
 [1520180247, "Full Rage"],
 [1582524884, "Full Rage"],
 [1694216430, "Full Rage"],
@@ -69,6 +69,7 @@ local cheaters = [[
 [2700852165, "Full Rage"],
 [2704005478, "Full Rage"],
 [2711580735, "Full Rage"],
+[2732218508, "Full Rage", "Uses Daggers"],
 [2746230924, "Full Rage"],
 [2802899298, "Full Rage"],
 [2804540604, "Full Rage"],
