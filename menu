@@ -70,28 +70,41 @@ if not _G.GUIFrameworkLoaded then
     local isUpdating = false
 
     -- fetch the raw file content and parse existing entries
-    local function fetchEntries()
-        if #CachedEntries > 0 then return CachedEntries end
+    -- fetch the raw file content and parse existing entries
+local function fetchEntries()
+    if #CachedEntries > 0 then return CachedEntries end
 
-        local raw = game:HttpGet(RAW_URL)
-        local content = raw:match("%[%[(.-)%]%]") or ""
+    local raw = game:HttpGet(RAW_URL)
+    
+    -- Find content between [[ and ]] (now on separate lines)
+    local content = raw:match("%[%[\n?(.-)\n?%]%]") or ""
+    content = content:gsub("\r", "")
 
-        content = content:gsub("\r", "")
-
-        local entries = {}
-        for line in content:gmatch("[^\n]+") do
-            line = line:match("^%s*(.-)%s*$")
-            if line ~= "" then
-                table.insert(entries, line)
-            end
+    local entries = {}
+    for line in content:gmatch("[^\n]+") do
+        line = line:match("^%s*(.-)%s*$")
+        if line ~= "" then
+            -- Remove trailing comma if present
+            line = line:gsub(",$", "")
+            table.insert(entries, line)
         end
-
-        CachedEntries = entries
-        return CachedEntries
     end
 
+    -- Build cache with userId keys
+    CachedEntries = {}
+    for _, entry in ipairs(entries) do
+        local userId = entry:match("^%[(%d+),")
+        if userId then
+            CachedEntries[tonumber(userId)] = entry
+        end
+    end
+
+    return entries
+end
+
     -- append new reports safely onto the existing file
     -- append new reports safely onto the existing file
+-- append new reports safely onto the existing file
 local function pushEntries(newReports)
     if isUpdating then return end
     isUpdating = true
@@ -121,6 +134,8 @@ local function pushEntries(newReports)
             local userId = line:match("^%[(%d+),")
             if userId then
                 userId = tonumber(userId)
+                -- Remove any trailing commas for consistent storage
+                line = line:gsub(",$", "")
                 entriesMap[userId] = line
                 table.insert(entriesList, {userId = userId, line = line})
             end
@@ -133,10 +148,8 @@ local function pushEntries(newReports)
         local userId = report:match("^%[(%d+),")
         if userId then
             userId = tonumber(userId)
-            -- Ensure the entry ends with a comma
-            if not report:match(",$") then
-                report = report .. ","
-            end
+            -- Remove any trailing commas for consistent storage
+            report = report:gsub(",$", "")
             entriesMap[userId] = report
         end
     end
@@ -162,16 +175,16 @@ local function pushEntries(newReports)
             if not lines[i]:match(",$") then
                 lines[i] = lines[i] .. ","
             end
-        else
-            -- Last entry should not have a comma
-            lines[i] = lines[i]:gsub(",$", "")
         end
     end
 
-    -- Rebuild the cheaters block inside original raw content
-    local newContent = rawText:sub(1, endIdx) ..
-                       table.concat(lines, "\n") ..
-                       rawText:sub(closeIdx)
+    -- Rebuild the cheaters block with proper formatting
+    -- Format: [[ on its own line, then entries, then ]] on its own line
+    local newContent = string.sub(rawText, 1, startIdx - 1) .. -- Everything before [[
+                       "[[" .. "\n" ..                          -- [[ on its own line
+                       table.concat(lines, "\n") .. "\n" ..     -- entries with newline at end
+                       "]]" ..                                  -- ]] on its own line
+                       string.sub(rawText, closeIdx + 2)        -- Everything after ]]
 
     editFile(newContent)
 
