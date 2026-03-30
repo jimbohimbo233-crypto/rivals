@@ -1,4 +1,4 @@
-local cheaters = [[
+[[
 [55810, "Full Rage"],
 [813154, "Full Rage"],
 [1395613, "Full Rage"],
@@ -333,6 +333,7 @@ local cheaters = [[
 [10581837000, "Closets", "Full Rage", "Uses Daggers"],
 [10583048062, "Full Rage"],
 [10584005240, "Full Rage"],
+[10586341773, "Closets", "Uses Bow", "Uses Daggers", "Uses Sling", "Uses Riot"],
 [10600624209, "Full Rage"],
 [10607852222, "Full Rage"],
 [10614643654, "Full Rage"],
@@ -343,4 +344,3 @@ local cheaters = [[
 [10651474025, "Full Rage"],
 [10669801845, "Full Rage"]
 ]]
-return cheaters
