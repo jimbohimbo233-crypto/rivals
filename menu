@@ -66,6 +66,37 @@ if not _G.GUIFrameworkLoaded then
         print("GitHub:", res.StatusCode)
     end
 
+    -- Parse entries from ANY format (extracts content between [[ and ]])
+    local function parseEntriesFromText(text)
+        if not text or text == "" then
+            return {}
+        end
+        
+        -- Find the content between [[ and ]]
+        local startPos = text:find("%[%[")
+        local endPos = text:find("%]%]", startPos and startPos + 2 or 1)
+        
+        if not startPos or not endPos then
+            print("[Cheater List] Could not find [[ ]] delimiters")
+            return {}
+        end
+        
+        local content = text:sub(startPos + 2, endPos - 1)
+        content = content:gsub("\r", "")
+        
+        local entries = {}
+        for line in content:gmatch("[^\n]+") do
+            line = line:match("^%s*(.-)%s*$")
+            if line ~= "" then
+                -- Remove trailing comma if present
+                line = line:gsub(",$", "")
+                table.insert(entries, line)
+            end
+        end
+        
+        return entries
+    end
+
     -- Format for GitHub (with local cheaters = and return)
     local function formatForGitHub(entriesList)
         local lines = {}
@@ -98,47 +129,13 @@ if not _G.GUIFrameworkLoaded then
                "]]"
     end
 
-    -- Parse entries from GitHub format (with local cheaters =)
-    local function parseGitHubFormat(text)
-        -- Extract content between [[ and ]]
-        local content = text:match("%[%[\n?(.-)\n?%]%]") or ""
-        content = content:gsub("\r", "")
-        
-        local entries = {}
-        for line in content:gmatch("[^\n]+") do
-            line = line:match("^%s*(.-)%s*$")
-            if line ~= "" then
-                line = line:gsub(",$", "")
-                table.insert(entries, line)
-            end
-        end
-        return entries
-    end
-    
-    -- Parse entries from local file format (just [[ ... ]])
-    local function parseLocalFormat(text)
-        -- Extract content between [[ and ]]
-        local content = text:match("%[%[\n?(.-)\n?%]%]") or ""
-        content = content:gsub("\r", "")
-        
-        local entries = {}
-        for line in content:gmatch("[^\n]+") do
-            line = line:match("^%s*(.-)%s*$")
-            if line ~= "" then
-                line = line:gsub(",$", "")
-                table.insert(entries, line)
-            end
-        end
-        return entries
-    end
-
-    -- Load from local file
+    -- Load from local file (should be just [[ ... ]] format)
     local function loadFromLocalFile()
         if isfile and isfile(LOCAL_FILE) then
             local success, content = pcall(readfile, LOCAL_FILE)
             if success and content and content ~= "" then
                 print("[Cheater List] Attempting to load from local file...")
-                local entries = parseLocalFormat(content)
+                local entries = parseEntriesFromText(content)
                 if #entries > 0 then
                     print("[Cheater List] Successfully loaded", #entries, "entries from local file")
                     return entries
@@ -150,20 +147,20 @@ if not _G.GUIFrameworkLoaded then
         return nil
     end
 
-    -- Load from GitHub
+    -- Load from GitHub (has local cheaters = and return)
     local function loadFromGitHub()
         local success, raw = pcall(game.HttpGet, game, GITHUB_URL, true)
         if success and raw then
             print("[Cheater List] Loading from GitHub...")
-            local entries = parseGitHubFormat(raw)
+            local entries = parseEntriesFromText(raw)
             if #entries > 0 then
                 print("[Cheater List] Successfully loaded", #entries, "entries from GitHub")
-                -- Cache to local file (using local format)
+                -- Cache to local file (using local format ONLY)
                 pcall(function()
                     if writefile then
                         local localContent = formatForLocalFile(entries)
                         writefile(LOCAL_FILE, localContent)
-                        print("[Cheater List] Cached to local file")
+                        print("[Cheater List] Cached to local file (local format)")
                     end
                 end)
                 return entries
@@ -176,11 +173,11 @@ if not _G.GUIFrameworkLoaded then
         return nil
     end
 
-    -- Save to local file (using local format)
+    -- Save to local file (ALWAYS use local format - just [[ ... ]])
     local function saveToLocalFile(entriesList)
         local localContent = formatForLocalFile(entriesList)
         writefile(LOCAL_FILE, localContent)
-        print("[Cheater List] Saved to local file:", LOCAL_FILE)
+        print("[Cheater List] Saved to local file:", LOCAL_FILE, "with", #entriesList, "entries")
     end
 
     -- Main function to get the cheater list
@@ -194,7 +191,7 @@ if not _G.GUIFrameworkLoaded then
         -- If local file is empty or doesn't exist, load from GitHub
         if not entries or #entries == 0 then
             entries = loadFromGitHub()
-            -- If GitHub had data, save it locally
+            -- If GitHub had data, save it locally with local format
             if entries and #entries > 0 then
                 saveToLocalFile(entries)
             end
@@ -222,7 +219,7 @@ if not _G.GUIFrameworkLoaded then
         if isUpdating then return end
         isUpdating = true
 
-        -- Get current entries (from local file or GitHub)
+        -- Get current entries (from local file first, then GitHub as fallback)
         local currentEntries = loadFromLocalFile()
         
         if not currentEntries or #currentEntries == 0 then
@@ -249,6 +246,7 @@ if not _G.GUIFrameworkLoaded then
                 -- Remove trailing comma for consistent storage
                 report = report:gsub(",$", "")
                 entriesMap[userId] = report
+                print("[Cheater List] Added/Updated user:", userId)
             end
         end
         
@@ -265,13 +263,15 @@ if not _G.GUIFrameworkLoaded then
             return tonumber(idA) < tonumber(idB)
         end)
         
+        print("[Cheater List] Total entries after update:", #entriesList)
+        
         -- Update cache
         CachedEntries = entriesMap
         
-        -- Save to local file (local format)
+        -- Save to local file (ALWAYS local format)
         saveToLocalFile(entriesList)
         
-        -- Update GitHub (GitHub format)
+        -- Update GitHub (GitHub format with local cheaters =)
         local githubContent = formatForGitHub(entriesList)
         editFile(githubContent)
         
