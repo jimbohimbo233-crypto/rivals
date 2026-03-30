@@ -6,6 +6,7 @@ if not _G.GUIFrameworkLoaded then
     local REPO      = "rivals"
     local FILE_PATH = "rankedCheaterListv2"
     local BRANCH    = "main"
+    local LOCAL_FILE = "rivalsCheaters.txt"
 
     local API_BASE  = "https://api.github.com/repos/" .. OWNER .. "/" .. REPO .. "/contents/" .. FILE_PATH
     local RAW_URL   = "https://raw.githubusercontent.com/" .. OWNER .. "/" .. REPO .. "/" .. BRANCH .. "/" .. FILE_PATH
@@ -65,133 +66,176 @@ if not _G.GUIFrameworkLoaded then
         print("GitHub:", res.StatusCode)
     end
 
-    --// CACHE SYSTEM
+    -- Format entries for saving (with proper line breaks)
+    local function formatEntriesForSave(entriesList)
+        local lines = {}
+        for i, entry in ipairs(entriesList) do
+            if i < #entriesList then
+                table.insert(lines, entry .. ",")
+            else
+                table.insert(lines, entry)
+            end
+        end
+        return "[[" .. "\n" .. table.concat(lines, "\n") .. "\n]]"
+    end
+
+    -- Parse entries from formatted text
+    local function parseEntriesFromText(text)
+        local content = text:match("%[%[\n?(.-)\n?%]%]") or ""
+        content = content:gsub("\r", "")
+        
+        local entries = {}
+        for line in content:gmatch("[^\n]+") do
+            line = line:match("^%s*(.-)%s*$")
+            if line ~= "" then
+                -- Remove trailing comma if present
+                line = line:gsub(",$", "")
+                table.insert(entries, line)
+            end
+        end
+        return entries
+    end
+
+    -- Save to local file
+    local function saveToLocalFile(entriesList)
+        local formatted = formatEntriesForSave(entriesList)
+        writefile(LOCAL_FILE, formatted)
+        print("[Cheater List] Saved to local file:", LOCAL_FILE)
+    end
+
+    -- Load from local file
+    local function loadFromLocalFile()
+        if isfile(LOCAL_FILE) then
+            local content = readfile(LOCAL_FILE)
+            if content and content ~= "" then
+                local entries = parseEntriesFromText(content)
+                if #entries > 0 then
+                    print("[Cheater List] Loaded from local file:", #entries, "entries")
+                    return entries
+                end
+            end
+        end
+        return nil
+    end
+
+    -- Load from GitHub
+    local function loadFromGitHub()
+        local success, raw = pcall(function()
+            return game:HttpGet(RAW_URL)
+        end)
+        
+        if not success then
+            warn("[Cheater List] Failed to fetch from GitHub")
+            return nil
+        end
+        
+        local entries = parseEntriesFromText(raw)
+        if #entries > 0 then
+            print("[Cheater List] Loaded from GitHub:", #entries, "entries")
+            return entries
+        end
+        return nil
+    end
+
+    -- Main function to get the cheater list
     local CachedEntries = {}
     local isUpdating = false
 
-    -- fetch the raw file content and parse existing entries
-    -- fetch the raw file content and parse existing entries
-local function fetchEntries()
-    if #CachedEntries > 0 then return CachedEntries end
-
-    local raw = game:HttpGet(RAW_URL)
-    
-    -- Find content between [[ and ]] (now on separate lines)
-    local content = raw:match("%[%[\n?(.-)\n?%]%]") or ""
-    content = content:gsub("\r", "")
-
-    local entries = {}
-    for line in content:gmatch("[^\n]+") do
-        line = line:match("^%s*(.-)%s*$")
-        if line ~= "" then
-            -- Remove trailing comma if present
-            line = line:gsub(",$", "")
-            table.insert(entries, line)
+    local function getCheaterList()
+        -- Try local file first
+        local entries = loadFromLocalFile()
+        
+        -- If local file is empty or doesn't exist, load from GitHub
+        if not entries or #entries == 0 then
+            entries = loadFromGitHub()
+            -- If GitHub had data, save it locally
+            if entries and #entries > 0 then
+                saveToLocalFile(entries)
+            end
         end
-    end
-
-    -- Build cache with userId keys
-    CachedEntries = {}
-    for _, entry in ipairs(entries) do
-        local userId = entry:match("^%[(%d+),")
-        if userId then
-            CachedEntries[tonumber(userId)] = entry
+        
+        -- If still no entries, return empty table
+        if not entries then
+            entries = {}
         end
+        
+        -- Build cache with userId keys for quick lookup
+        CachedEntries = {}
+        for _, entry in ipairs(entries) do
+            local userId = entry:match("^%[(%d+),")
+            if userId then
+                CachedEntries[tonumber(userId)] = entry
+            end
+        end
+        
+        return entries
     end
 
-    return entries
-end
+    -- Append new reports and save to both locations
+    local function pushEntries(newReports)
+        if isUpdating then return end
+        isUpdating = true
 
-    -- append new reports safely onto the existing file
-    -- append new reports safely onto the existing file
--- append new reports safely onto the existing file
-local function pushEntries(newReports)
-    if isUpdating then return end
-    isUpdating = true
-
-    -- fetch latest raw content
-    local rawText = game:HttpGet(RAW_URL)
-
-    local startIdx, endIdx = rawText:find("%[%[")
-    local closeIdx = rawText:find("%]%]", endIdx)
-    if not startIdx or not closeIdx then
-        warn("Could not find cheaters block in GitHub file")
-        isUpdating = false
-        return
-    end
-
-    local existingContent = rawText:sub(endIdx + 1, closeIdx - 1)
-    existingContent = existingContent:gsub("\r", "")
-
-    -- Parse existing entries into a table with userId as key for easy lookup
-    local entriesMap = {}
-    local entriesList = {}
-    
-    for line in existingContent:gmatch("[^\n]+") do
-        line = line:match("^%s*(.-)%s*$")
-        if line ~= "" then
-            -- Extract userId from the entry
-            local userId = line:match("^%[(%d+),")
+        -- Get current entries (from local file or GitHub)
+        local currentEntries = {}
+        local localEntries = loadFromLocalFile()
+        
+        if localEntries and #localEntries > 0 then
+            currentEntries = localEntries
+        else
+            currentEntries = loadFromGitHub() or {}
+        end
+        
+        -- Parse existing entries into map
+        local entriesMap = {}
+        for _, entry in ipairs(currentEntries) do
+            local userId = entry:match("^%[(%d+),")
             if userId then
                 userId = tonumber(userId)
-                -- Remove any trailing commas for consistent storage
-                line = line:gsub(",$", "")
-                entriesMap[userId] = line
-                table.insert(entriesList, {userId = userId, line = line})
+                -- Remove trailing comma for consistent storage
+                entry = entry:gsub(",$", "")
+                entriesMap[userId] = entry
             end
         end
-    end
-
-    -- Update or add new entries
-    for _, report in ipairs(newReports) do
-        -- Extract userId from the report
-        local userId = report:match("^%[(%d+),")
-        if userId then
-            userId = tonumber(userId)
-            -- Remove any trailing commas for consistent storage
-            report = report:gsub(",$", "")
-            entriesMap[userId] = report
+        
+        -- Update or add new entries
+        for _, report in ipairs(newReports) do
+            local userId = report:match("^%[(%d+),")
+            if userId then
+                userId = tonumber(userId)
+                -- Remove trailing comma for consistent storage
+                report = report:gsub(",$", "")
+                entriesMap[userId] = report
+            end
         end
-    end
-
-    -- Rebuild the entries list with proper formatting
-    local lines = {}
-    for userId, entry in pairs(entriesMap) do
-        table.insert(lines, entry)
+        
+        -- Convert back to list and sort
+        local entriesList = {}
+        for userId, entry in pairs(entriesMap) do
+            table.insert(entriesList, entry)
+        end
+        
+        -- Sort by userId
+        table.sort(entriesList, function(a, b)
+            local idA = a:match("^%[(%d+),")
+            local idB = b:match("^%[(%d+),")
+            return tonumber(idA) < tonumber(idB)
+        end)
+        
         -- Update cache
-        CachedEntries[userId] = entry
+        CachedEntries = entriesMap
+        
+        -- Save to local file
+        saveToLocalFile(entriesList)
+        
+        -- Update GitHub
+        local formattedContent = formatEntriesForSave(entriesList)
+        editFile(formattedContent)
+        
+        task.delay(2, function()
+            isUpdating = false
+        end)
     end
-    
-    -- Sort entries by userId for consistent ordering
-    table.sort(lines, function(a, b)
-        local idA = a:match("^%[(%d+),")
-        local idB = b:match("^%[(%d+),")
-        return tonumber(idA) < tonumber(idB)
-    end)
-
-    -- Add a trailing comma to all entries except the last one
-    for i = 1, #lines do
-        if i < #lines then
-            if not lines[i]:match(",$") then
-                lines[i] = lines[i] .. ","
-            end
-        end
-    end
-
-    -- Rebuild the cheaters block with proper formatting
-    -- Format: [[ on its own line, then entries, then ]] on its own line
-    local newContent = string.sub(rawText, 1, startIdx - 1) .. -- Everything before [[
-                       "[[" .. "\n" ..                          -- [[ on its own line
-                       table.concat(lines, "\n") .. "\n" ..     -- entries with newline at end
-                       "]]" ..                                  -- ]] on its own line
-                       string.sub(rawText, closeIdx + 2)        -- Everything after ]]
-
-    editFile(newContent)
-
-    task.delay(2, function()
-        isUpdating = false
-    end)
-end
 
     _G.GUIFrameworkLoaded = true
 
@@ -267,8 +311,8 @@ end
         return g
     end
 
-    local NotifGui  = makeGui("FW_Notifications", 999999)  -- always on
-    local PlayerGui = makeGui("FW_PlayerHUD",     999998)  -- ";" toggles this
+    local NotifGui  = makeGui("FW_Notifications", 999999)
+    local PlayerGui = makeGui("FW_PlayerHUD",     999998)
 
     local hudVisible = true
     UserInputService.InputBegan:Connect(function(input, processed)
@@ -316,17 +360,6 @@ end
         end)
     end
 
-    --[[
-        Notify:Send(options)
-        options = {
-            Type        = "normal" | "warning" | "info"
-            Title       = string
-            Description = string
-            Duration    = number   (seconds, default 4)
-            Confirm     = bool
-            OnConfirm   = function(bool)
-        }
-    --]]
     local Notify = {}
 
     function Notify:Send(opts)
@@ -504,7 +537,7 @@ end
     --  PLAYER HUD
     -- ══════════════════════════════════════════════
 
-    local CARD_BASE_H = 64   -- collapsed card height
+    local CARD_BASE_H = 64
     local HUD_W       = 310
     local HUD_H       = 300
 
@@ -570,8 +603,6 @@ end
     CountBadge.Parent                 = Header
     corner(CountBadge, 6)
 
-    -- ── Outer ScrollingFrame for the player list ───
-    -- ClipsDescendants = true so cards don't bleed outside
     local Scroll = Instance.new("ScrollingFrame")
     Scroll.Size                   = UDim2.new(1, -12, 1, -46)
     Scroll.Position               = UDim2.new(0, 6, 0, 41)
@@ -579,7 +610,7 @@ end
     Scroll.ScrollBarThickness     = 3
     Scroll.ScrollBarImageColor3   = Theme.AccentBlue
     Scroll.BorderSizePixel        = 0
-    Scroll.ClipsDescendants       = true   -- cards must not bleed through the HUD edge
+    Scroll.ClipsDescendants       = true
     Scroll.ScrollingDirection     = Enum.ScrollingDirection.Y
     Scroll.Parent                 = HUDFrame
 
@@ -588,9 +619,6 @@ end
     ListLayout.SortOrder = Enum.SortOrder.Name
     ListLayout.Parent    = Scroll
 
-    -- Keep canvas height in sync with actual content
-    -- (UIListLayout.AbsoluteContentSize already includes expanded cards
-    --  because we resize the card Frame itself on open/close)
     ListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
         Scroll.CanvasSize = UDim2.new(0, 0, 0, ListLayout.AbsoluteContentSize.Y + 8)
     end)
@@ -611,7 +639,6 @@ end
         { id = "riot",    label = "Uses Riot"    },
     }
 
-    -- _G.PlayerTags[userId][tagId] = bool
     local playerTagStates = {}
 
     -- ─────────────────────────────────────────────
@@ -624,7 +651,6 @@ end
     local PAD      = 6
     local REPORT_H = 30
 
-    -- full height of all dropdown content
     local DD_CONTENT_H = PAD
         + SEC_H  + (#STYLE_TAGS  * ITEM_H)
         + PAD + DIV_H + PAD
@@ -632,8 +658,6 @@ end
         + PAD + DIV_H + PAD
         + REPORT_H + PAD
 
-    -- max visible height for the dropdown panel
-    -- (capped so it never exceeds the HUD window)
     local DD_MAX_VISIBLE = 200
     local DD_OPEN_H = math.min(DD_CONTENT_H, DD_MAX_VISIBLE)
 
@@ -721,7 +745,6 @@ end
         Hdr.TextXAlignment         = Enum.TextXAlignment.Left
         Hdr.Text                   = string.upper(text)
         Hdr.Parent                 = parent
-        -- give it left padding via layout UIPadding on the scroll
     end
 
     local function makeDivider(parent)
@@ -735,16 +758,6 @@ end
 
     -- ─────────────────────────────────────────────
     --  Dropdown builder
-    --  Returns (outerFrame, toggleFn)
-    --
-    --  Structure:
-    --    outerFrame  (Frame, height animated 0 → DD_OPEN_H)
-    --      └─ ddScroll  (ScrollingFrame, fills outerFrame)
-    --           └─ ddList  (UIListLayout)
-    --           └─ padding / section headers / toggle rows / dividers / report btn
-    --
-    --  The outer card Frame is resized by toggleFn so UIListLayout
-    --  on the parent Scroll sees the correct total height.
     -- ─────────────────────────────────────────────
 
     local function makeDropdown(cardFrame, player)
@@ -756,7 +769,6 @@ end
             for _, t in ipairs(WEAPON_TAGS) do playerTagStates[userId][t.id] = false end
         end
 
-        -- Outer clipping frame — height tweened
         local Outer = Instance.new("Frame")
         Outer.Size                   = UDim2.new(1, -10, 0, 0)
         Outer.Position               = UDim2.new(0, 5, 0, CARD_BASE_H + 4)
@@ -768,7 +780,6 @@ end
         corner(Outer, 12)
         makeStroke(Outer, Theme.AccentBlue, 1, 0.78)
 
-        -- Inner ScrollingFrame — scrollable if content > DD_MAX_VISIBLE
         local ddScroll = Instance.new("ScrollingFrame")
         ddScroll.Size                   = UDim2.new(1, 0, 1, 0)
         ddScroll.BackgroundTransparency = 1
@@ -789,7 +800,6 @@ end
         ddList.SortOrder = Enum.SortOrder.LayoutOrder
         ddList.Parent    = ddScroll
 
-        -- ── Spacer (top padding) ────────────────────
         local topSpacer = Instance.new("Frame")
         topSpacer.Size                   = UDim2.new(1, 0, 0, PAD)
         topSpacer.BackgroundTransparency = 1
@@ -797,7 +807,6 @@ end
         topSpacer.LayoutOrder            = 0
         topSpacer.Parent                 = ddScroll
 
-        -- ── Playstyle section ──────────────────────
         local styleHdr = Instance.new("TextLabel")
         styleHdr.Size                   = UDim2.new(1, 0, 0, SEC_H)
         styleHdr.BackgroundTransparency = 1
@@ -876,7 +885,6 @@ end
             end)
         end
 
-        -- divider
         local div1 = Instance.new("Frame")
         div1.Size                   = UDim2.new(1, 0, 0, PAD + DIV_H + PAD)
         div1.BackgroundTransparency = 1
@@ -892,7 +900,6 @@ end
         divLine1.BorderSizePixel        = 0
         divLine1.Parent                 = div1
 
-        -- ── Weapons section ────────────────────────
         local weapHdr = Instance.new("TextLabel")
         weapHdr.Size                   = UDim2.new(1, 0, 0, SEC_H)
         weapHdr.BackgroundTransparency = 1
@@ -971,7 +978,6 @@ end
             end)
         end
 
-        -- divider 2
         local div2 = Instance.new("Frame")
         div2.Size                   = UDim2.new(1, 0, 0, PAD + DIV_H + PAD)
         div2.BackgroundTransparency = 1
@@ -987,7 +993,6 @@ end
         divLine2.BorderSizePixel        = 0
         divLine2.Parent                 = div2
 
-        -- ── Send Report ────────────────────────────
         local reportWrap = Instance.new("Frame")
         reportWrap.Size                   = UDim2.new(1, 0, 0, REPORT_H + PAD)
         reportWrap.BackgroundTransparency = 1
@@ -1016,57 +1021,46 @@ end
         end)
 
         ReportBtn.MouseButton1Click:Connect(function()
-    local activeTags = {}
+            local activeTags = {}
+        
+            for _, tag in ipairs(STYLE_TAGS) do
+                if playerTagStates[userId][tag.id] then
+                    table.insert(activeTags, string.format('"%s"', tag.label))
+                end
+            end
+            for _, tag in ipairs(WEAPON_TAGS) do
+                if playerTagStates[userId][tag.id] then
+                    table.insert(activeTags, string.format('"%s"', tag.label))
+                end
+            end
+        
+            if #activeTags == 0 then
+                Notify:Send({
+                    Type = "warning",
+                    Title = "No Tags",
+                    Description = "Select at least one tag",
+                    Duration = 4
+                })
+                return
+            end
+        
+            -- Build the new entry
+            local newEntry = string.format('[%d, %s]', player.UserId, table.concat(activeTags, ", "))
+            
+            -- Push to both local file and GitHub
+            pushEntries({newEntry})
+        
+            -- Check if this is an update or new report
+            local isUpdate = CachedEntries[player.UserId] ~= nil
+        
+            Notify:Send({
+                Type        = "warning",
+                Title       = isUpdate and "Report Updated" or "Report Added",
+                Description = player.Name .. "\n" .. table.concat(activeTags, ", "),
+                Duration    = 5
+            })
+        end)
 
-    for _, tag in ipairs(STYLE_TAGS) do
-        if playerTagStates[userId][tag.id] then
-            table.insert(activeTags, string.format('"%s"', tag.label))
-        end
-    end
-    for _, tag in ipairs(WEAPON_TAGS) do
-        if playerTagStates[userId][tag.id] then
-            table.insert(activeTags, string.format('"%s"', tag.label))
-        end
-    end
-
-    if #activeTags == 0 then
-        Notify:Send({
-            Type = "warning",
-            Title = "No Tags",
-            Description = "Select at least one tag",
-            Duration = 4
-        })
-        return
-    end
-
-    -- Build the new entry with proper formatting
-    local newEntry = string.format('[%d, %s]', player.UserId, table.concat(activeTags, ", "))
-    
-    -- Pass the new entry as a table with one element
-    pushEntries({newEntry})
-
-    -- Check if this is an update or new report
-    local isUpdate = false
-    local existingEntries = fetchEntries()
-    for _, entry in ipairs(existingEntries) do
-        local existingId = entry:match("^%[(%d+),")
-        if existingId and tonumber(existingId) == player.UserId then
-            isUpdate = true
-            break
-        end
-    end
-
-    Notify:Send({
-        Type        = "warning",
-        Title       = isUpdate and "Report Updated" or "Report Added",
-        Description = player.Name .. "\n" .. table.concat(activeTags, ", "),
-        Duration    = 5
-    })
-end)
-
-        -- ── open / close ───────────────────────────
-        -- When the dropdown opens we grow the card Frame so UIListLayout
-        -- on the outer Scroll sees the new total height and updates CanvasSize.
         local isOpen = false
         local tweenInfo = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
@@ -1092,13 +1086,12 @@ end)
         if player == LocalPlayer then return end
         if playerCards[player.UserId] then return end
 
-        -- Card starts at CARD_BASE_H; grows when dropdown opens
         local Card = Instance.new("Frame")
         Card.Name             = player.Name
         Card.Size             = UDim2.new(1, 0, 0, CARD_BASE_H)
         Card.BackgroundColor3 = Theme.BgDark
         Card.BorderSizePixel  = 0
-        Card.ClipsDescendants = false   -- dropdown must be visible outside card bounds
+        Card.ClipsDescendants = false
         Card.Parent           = Scroll
         corner(Card, 14)
         makeStroke(Card, Theme.AccentBlue, 1, 0.84)
@@ -1190,6 +1183,9 @@ end)
         CountBadge.Text = tostring(math.max(0, #Players:GetPlayers() - 1))
     end
 
+    -- Load the initial cheater list
+    getCheaterList()
+
     for _, p in ipairs(Players:GetPlayers()) do
         makePlayerCard(p)
     end
@@ -1206,20 +1202,6 @@ end)
     -- ══════════════════════════════════════════════
     --  EXPOSE GLOBALS
     -- ══════════════════════════════════════════════
-
-    --[[
-        _G.Notify:Send({ Title="Hello", Description="World", Duration=5 })
-        _G.Notify:Send({ Type="warning", Title="Warn",  Description="..." })
-        _G.Notify:Send({ Type="info",    Title="Info",  Description="..." })
-        _G.Notify:Send({
-            Type="warning", Title="Confirm?", Confirm=true, Duration=15,
-            OnConfirm = function(ok) print(ok) end,
-        })
-
-        -- Read tags from anywhere:
-        -- _G.PlayerTags[userId]["closets"]  → bool
-        -- _G.PlayerTags[userId]["riot"]     → bool
-    --]]
 
     _G.Notify     = Notify
     _G.PlayerTags = playerTagStates
