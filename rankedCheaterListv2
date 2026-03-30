@@ -36,6 +36,7 @@ local cheaters = [[
 [1515970788, "Semi-Rage"],
 [1520180247, "Full Rage"],
 [1582524884, "Full Rage"],
+[1674429443, "Closets"],
 [1694216430, "Full Rage"],
 [1731943293, "Full Rage"],
 [1753457086, "Full Rage"],
@@ -347,5 +348,4 @@ local cheaters = [[
 [10651474025, "Full Rage"],
 [10669801845, "Full Rage"]
 ]]
-
 return cheaters
