@@ -7,9 +7,9 @@ if not _G.GUIFrameworkLoaded then
     local FILE_PATH = "rankedCheaterListv2"
     local BRANCH    = "main"
     local LOCAL_FILE = "rivalsCheaters.txt"
+    local GITHUB_URL = "https://raw.githubusercontent.com/" .. OWNER .. "/" .. REPO .. "/" .. BRANCH .. "/" .. FILE_PATH
 
     local API_BASE  = "https://api.github.com/repos/" .. OWNER .. "/" .. REPO .. "/contents/" .. FILE_PATH
-    local RAW_URL   = "https://raw.githubusercontent.com/" .. OWNER .. "/" .. REPO .. "/" .. BRANCH .. "/" .. FILE_PATH
 
     local function base64Encode(data)
         local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -47,258 +47,175 @@ if not _G.GUIFrameworkLoaded then
         return data.sha
     end
 
-    -- Update the editFile function to handle the full file structure
-local function editFile(newContent)
-    -- newContent should now be the FULL file content including local cheaters = [[ ... ]] and return cheaters
-    local res = request({
-        Url = API_BASE,
-        Method = "PUT",
-        Headers = {
-            ["Authorization"] = "Bearer " .. GITHUB_TOKEN,
-            ["Accept"] = "application/vnd.github+json",
-            ["Content-Type"] = "application/json",
-        },
-        Body = HttpService:JSONEncode({
-            message = "update cheater list",
-            content = base64Encode(newContent),
-            sha = getFileSha(),
-            branch = BRANCH
+    local function editFile(newContent)
+        local res = request({
+            Url = API_BASE,
+            Method = "PUT",
+            Headers = {
+                ["Authorization"] = "Bearer " .. GITHUB_TOKEN,
+                ["Accept"] = "application/vnd.github+json",
+                ["Content-Type"] = "application/json",
+            },
+            Body = HttpService:JSONEncode({
+                message = "update cheater list",
+                content = base64Encode(newContent),
+                sha = getFileSha(),
+                branch = BRANCH
+            })
         })
-    })
-    print("GitHub:", res.StatusCode)
-end
-
--- Update formatEntriesForSave to include the full file structure
-local function formatEntriesForSave(entriesList)
-    local lines = {}
-    for i, entry in ipairs(entriesList) do
-        if i < #entriesList then
-            table.insert(lines, entry .. ",")
-        else
-            table.insert(lines, entry)
-        end
+        print("GitHub:", res.StatusCode)
     end
-    
-    -- Return the FULL file content with proper structure
-    return "local cheaters = [[" .. "\n" .. 
-           table.concat(lines, "\n") .. "\n" .. 
-           "]]\nreturn cheaters"
-end
 
-local function parseCheaterEntries(text)
-    local map = {}
-    
-    -- Normalise line endings
-    text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
-    
-    -- Safer extraction: find [[ and ]] by position instead of pattern
-    local startPos = text:find("%[%[")
-    local endPos = text:find("%]%]", startPos and startPos + 2 or 1)
-    
-    if not startPos or not endPos then
-        print("[Cheater List] Could not find [[ ]] delimiters in file")
-        return map
-    end
-    
-    local content = text:sub(startPos + 2, endPos - 1)
-
-    for line in content:gmatch("[^\n]+") do
-        line = line:match("^%s*(.-)%s*$")
-        if line ~= "" then
-            line = line:gsub(",$", "")
-
-            local parts = {}
-            for v in line:gmatch('[^,%[%]]+') do
-                v = v:gsub('^%s*"', ''):gsub('"%s*$', ''):gsub("^%s*", ""):gsub("%s*$", "")
-                if v ~= "" then
-                    table.insert(parts, v)
-                end
-            end
-
-            local uid = tonumber(parts[1])
-            if uid then
-                map[uid] = {}
-                for i = 2, #parts do
-                    table.insert(map[uid], parts[i])
-                end
-            end
-        end
-    end
-    return map
-end
-
--- Count entries (# doesn't work on hash maps)
-local function countMap(t)
-    local n = 0
-    for _ in pairs(t) do n = n + 1 end
-    return n
-end
-
-local function loadFromLocalFile()
-    if isfile and isfile(LOCAL_FILE) then
-        local success, content = pcall(readfile, LOCAL_FILE)
-        if success and content and content ~= "" then
-            print("[Cheater List] Attempting to load from local file...")
-            local map = parseCheaterEntries(content)
-            local count = countMap(map)
-            if count > 0 then
-                print("[Cheater List] Successfully loaded", count, "entries from local file")
-                return map
+    -- Format for GitHub (with local cheaters = and return)
+    local function formatForGitHub(entriesList)
+        local lines = {}
+        for i, entry in ipairs(entriesList) do
+            if i < #entriesList then
+                table.insert(lines, entry .. ",")
             else
-                print("[Cheater List] Local file exists but contains no valid entries")
+                table.insert(lines, entry)
             end
         end
+        
+        return "local cheaters = [[" .. "\n" .. 
+               table.concat(lines, "\n") .. "\n" .. 
+               "]]\nreturn cheaters"
     end
-    return nil
-end
+    
+    -- Format for local file (just the bracketed content)
+    local function formatForLocalFile(entriesList)
+        local lines = {}
+        for i, entry in ipairs(entriesList) do
+            if i < #entriesList then
+                table.insert(lines, entry .. ",")
+            else
+                table.insert(lines, entry)
+            end
+        end
+        
+        return "[[" .. "\n" .. 
+               table.concat(lines, "\n") .. "\n" .. 
+               "]]"
+    end
 
-local function loadFromGitHub()
-    local success, raw = pcall(game.HttpGet, game, GITHUB_URL, true)
-    if success and raw then
-        print("[Cheater List] Loading from GitHub...")
-        local map = parseCheaterEntries(raw)
-        local count = countMap(map)
-        if count > 0 then
-            print("[Cheater List] Successfully loaded", count, "entries from GitHub")
-            pcall(function()
-                if writefile then
-                    writefile(LOCAL_FILE, raw)
-                    print("[Cheater List] Cached to local file")
+    -- Parse entries from GitHub format (with local cheaters =)
+    local function parseGitHubFormat(text)
+        -- Extract content between [[ and ]]
+        local content = text:match("%[%[\n?(.-)\n?%]%]") or ""
+        content = content:gsub("\r", "")
+        
+        local entries = {}
+        for line in content:gmatch("[^\n]+") do
+            line = line:match("^%s*(.-)%s*$")
+            if line ~= "" then
+                line = line:gsub(",$", "")
+                table.insert(entries, line)
+            end
+        end
+        return entries
+    end
+    
+    -- Parse entries from local file format (just [[ ... ]])
+    local function parseLocalFormat(text)
+        -- Extract content between [[ and ]]
+        local content = text:match("%[%[\n?(.-)\n?%]%]") or ""
+        content = content:gsub("\r", "")
+        
+        local entries = {}
+        for line in content:gmatch("[^\n]+") do
+            line = line:match("^%s*(.-)%s*$")
+            if line ~= "" then
+                line = line:gsub(",$", "")
+                table.insert(entries, line)
+            end
+        end
+        return entries
+    end
+
+    -- Load from local file
+    local function loadFromLocalFile()
+        if isfile and isfile(LOCAL_FILE) then
+            local success, content = pcall(readfile, LOCAL_FILE)
+            if success and content and content ~= "" then
+                print("[Cheater List] Attempting to load from local file...")
+                local entries = parseLocalFormat(content)
+                if #entries > 0 then
+                    print("[Cheater List] Successfully loaded", #entries, "entries from local file")
+                    return entries
+                else
+                    print("[Cheater List] Local file exists but contains no valid entries")
                 end
-            end)
-            return map
+            end
+        end
+        return nil
+    end
+
+    -- Load from GitHub
+    local function loadFromGitHub()
+        local success, raw = pcall(game.HttpGet, game, GITHUB_URL, true)
+        if success and raw then
+            print("[Cheater List] Loading from GitHub...")
+            local entries = parseGitHubFormat(raw)
+            if #entries > 0 then
+                print("[Cheater List] Successfully loaded", #entries, "entries from GitHub")
+                -- Cache to local file (using local format)
+                pcall(function()
+                    if writefile then
+                        local localContent = formatForLocalFile(entries)
+                        writefile(LOCAL_FILE, localContent)
+                        print("[Cheater List] Cached to local file")
+                    end
+                end)
+                return entries
+            else
+                print("[Cheater List] GitHub returned data but parsed 0 entries")
+            end
         else
-            print("[Cheater List] GitHub returned data but parsed 0 entries")
+            print("[Cheater List] GitHub fetch failed")
         end
-    else
-        print("[Cheater List] GitHub fetch failed")
+        return nil
     end
-    return nil
-end
 
+    -- Save to local file (using local format)
+    local function saveToLocalFile(entriesList)
+        local localContent = formatForLocalFile(entriesList)
+        writefile(LOCAL_FILE, localContent)
+        print("[Cheater List] Saved to local file:", LOCAL_FILE)
+    end
 
--- Update loadFromLocalFile and loadFromGitHub to handle full file structure
-local function parseEntriesFromText(text)
-    -- Extract content between [[ and ]]
-    local content = text:match("%[%[\n?(.-)\n?%]%]") or ""
-    content = content:gsub("\r", "")
-    
-    local entries = {}
-    for line in content:gmatch("[^\n]+") do
-        line = line:match("^%s*(.-)%s*$")
-        if line ~= "" then
-            -- Remove trailing comma if present
-            line = line:gsub(",$", "")
-            table.insert(entries, line)
+    -- Main function to get the cheater list
+    local CachedEntries = {}
+    local isUpdating = false
+
+    local function getCheaterList()
+        -- Try local file first
+        local entries = loadFromLocalFile()
+        
+        -- If local file is empty or doesn't exist, load from GitHub
+        if not entries or #entries == 0 then
+            entries = loadFromGitHub()
+            -- If GitHub had data, save it locally
+            if entries and #entries > 0 then
+                saveToLocalFile(entries)
+            end
         end
-    end
-    return entries
-end
-
--- Update saveToLocalFile to save full structure
-local function saveToLocalFile(entriesList)
-    local fullContent = formatEntriesForSave(entriesList)
-    writefile(LOCAL_FILE, fullContent)
-    print("[Cheater List] Saved to local file:", LOCAL_FILE)
-end
-
-local function getCheaterList()
-    -- Try local file first
-    local entries = loadFromLocalFile()
-    
-    -- If local file is empty or doesn't exist, load from GitHub
-    if not entries or #entries == 0 then
-        entries = loadFromGitHub()
-        -- If GitHub had data, save it locally with full structure
-        if entries and #entries > 0 then
-            saveToLocalFile(entries)
+        
+        -- If still no entries, return empty table
+        if not entries then
+            entries = {}
         end
-    end
-    
-    -- If still no entries, return empty table
-    if not entries then
-        entries = {}
-    end
-    
-    -- Build cache with userId keys for quick lookup
-    CachedEntries = {}
-    for _, entry in ipairs(entries) do
-        local userId = entry:match("^%[(%d+),")
-        if userId then
-            CachedEntries[tonumber(userId)] = entry
+        
+        -- Build cache with userId keys for quick lookup
+        CachedEntries = {}
+        for _, entry in ipairs(entries) do
+            local userId = entry:match("^%[(%d+),")
+            if userId then
+                CachedEntries[tonumber(userId)] = entry
+            end
         end
+        
+        return entries
     end
-    
-    return entries
-end
-
--- Update pushEntries to pass the full content to editFile
-local function pushEntries(newReports)
-    if isUpdating then return end
-    isUpdating = true
-
-    -- Get current entries (from local file or GitHub)
-    local currentEntries = {}
-    local localEntries = loadFromLocalFile()
-    
-    if localEntries and #localEntries > 0 then
-        currentEntries = localEntries
-    else
-        currentEntries = loadFromGitHub() or {}
-    end
-    
-    -- Parse existing entries into map
-    local entriesMap = {}
-    for _, entry in ipairs(currentEntries) do
-        local userId = entry:match("^%[(%d+),")
-        if userId then
-            userId = tonumber(userId)
-            -- Remove trailing comma for consistent storage
-            entry = entry:gsub(",$", "")
-            entriesMap[userId] = entry
-        end
-    end
-    
-    -- Update or add new entries
-    for _, report in ipairs(newReports) do
-        local userId = report:match("^%[(%d+),")
-        if userId then
-            userId = tonumber(userId)
-            -- Remove trailing comma for consistent storage
-            report = report:gsub(",$", "")
-            entriesMap[userId] = report
-        end
-    end
-    
-    -- Convert back to list and sort
-    local entriesList = {}
-    for userId, entry in pairs(entriesMap) do
-        table.insert(entriesList, entry)
-    end
-    
-    -- Sort by userId
-    table.sort(entriesList, function(a, b)
-        local idA = a:match("^%[(%d+),")
-        local idB = b:match("^%[(%d+),")
-        return tonumber(idA) < tonumber(idB)
-    end)
-    
-    -- Update cache
-    CachedEntries = entriesMap
-    
-    -- Save to local file (full structure)
-    saveToLocalFile(entriesList)
-    
-    -- Update GitHub with full structure
-    local fullContent = formatEntriesForSave(entriesList)
-    editFile(fullContent)
-    
-    task.delay(2, function()
-        isUpdating = false
-    end)
-end
-
--- Update getCheaterList to handle full structure
 
     -- Append new reports and save to both locations
     local function pushEntries(newReports)
@@ -306,12 +223,9 @@ end
         isUpdating = true
 
         -- Get current entries (from local file or GitHub)
-        local currentEntries = {}
-        local localEntries = loadFromLocalFile()
+        local currentEntries = loadFromLocalFile()
         
-        if localEntries and #localEntries > 0 then
-            currentEntries = localEntries
-        else
+        if not currentEntries or #currentEntries == 0 then
             currentEntries = loadFromGitHub() or {}
         end
         
@@ -354,12 +268,12 @@ end
         -- Update cache
         CachedEntries = entriesMap
         
-        -- Save to local file
+        -- Save to local file (local format)
         saveToLocalFile(entriesList)
         
-        -- Update GitHub
-        local formattedContent = formatEntriesForSave(entriesList)
-        editFile(formattedContent)
+        -- Update GitHub (GitHub format)
+        local githubContent = formatForGitHub(entriesList)
+        editFile(githubContent)
         
         task.delay(2, function()
             isUpdating = false
