@@ -320,6 +320,7 @@ local cheaters = [[
 [10157844080, "Semi-Rage"],
 [10186803969, "Full Rage"],
 [10187204961, "Full Rage"],
+[10194799245, "Full Rage", "Uses Bow", "Uses Daggers", "Uses Sling", "Uses Riot"],
 [10206787726, "Full Rage"],
 [10209911513, "Full Rage"],
 [10228506759, "Full Rage", "Uses Bow", "Uses Daggers", "Uses Sling", "Uses Riot"],
